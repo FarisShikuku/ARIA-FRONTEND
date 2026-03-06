@@ -4,6 +4,7 @@ interface WebSocketOptions {
   url?: string;
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
+  enabled?: boolean;
 }
 
 interface WebSocketReturn {
@@ -12,32 +13,44 @@ interface WebSocketReturn {
   latency: number;
   sendMessage: (data: any) => void;
   sendAudioChunk: (audioData: ArrayBuffer) => void;
+  error: Error | null;
 }
 
 export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
   const {
     url = process.env.NEXT_PUBLIC_WS_URL || 'wss://api.aria.com/ws',
     reconnectInterval = 3000,
-    maxReconnectAttempts = 5
+    maxReconnectAttempts = 5,
+    enabled = true
   } = options;
 
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [lastMessage, setLastMessage] = useState<any>(null);
   const [latency, setLatency] = useState<number>(0);
+  const [error, setError] = useState<Error | null>(null);
+  
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttempts = useRef<number>(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const connect = useCallback(() => {
+    if (!enabled) return;
+    
     try {
+      // Check if WebSocket is supported
+      if (typeof WebSocket === 'undefined') {
+        setError(new Error('WebSocket not supported in this environment'));
+        return;
+      }
+
       const ws = new WebSocket(url);
       wsRef.current = ws;
 
       ws.onopen = () => {
         setIsConnected(true);
+        setError(null);
         reconnectAttempts.current = 0;
-        console.log('WebSocket connected');
         
         // Start ping-pong latency measurement
         pingIntervalRef.current = setInterval(() => {
@@ -53,7 +66,9 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
         if (pingIntervalRef.current) {
           clearInterval(pingIntervalRef.current);
         }
-        if (reconnectAttempts.current < maxReconnectAttempts) {
+        
+        // Only attempt reconnect if enabled and within limits
+        if (enabled && reconnectAttempts.current < maxReconnectAttempts) {
           reconnectTimeoutRef.current = setTimeout(() => {
             reconnectAttempts.current++;
             connect();
@@ -61,8 +76,10 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
         }
       };
 
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+      ws.onerror = (event) => {
+        // Don't log the error object directly as it may contain circular references
+        setError(new Error('WebSocket connection failed'));
+        // Silent fail - don't console.error
       };
 
       ws.onmessage = (event) => {
@@ -81,10 +98,10 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
           setLastMessage(event.data);
         }
       };
-    } catch (error) {
-      console.error('WebSocket connection error:', error);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error('WebSocket connection failed'));
     }
-  }, [url, reconnectInterval, maxReconnectAttempts]);
+  }, [url, reconnectInterval, maxReconnectAttempts, enabled]);
 
   useEffect(() => {
     connect();
@@ -102,26 +119,25 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
   }, [connect]);
 
   const sendMessage = useCallback((data: any) => {
-    if (wsRef.current && isConnected) {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(typeof data === 'string' ? data : JSON.stringify(data));
-    } else {
-      console.warn('WebSocket not connected');
     }
-  }, [isConnected]);
+    // Silently fail if not connected - no warning
+  }, []);
 
   const sendAudioChunk = useCallback((audioData: ArrayBuffer) => {
-    if (wsRef.current && isConnected) {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(audioData);
-    } else {
-      console.warn('WebSocket not connected');
     }
-  }, [isConnected]);
+    // Silently fail if not connected
+  }, []);
 
   return { 
     isConnected, 
     lastMessage, 
     latency, 
     sendMessage, 
-    sendAudioChunk 
+    sendAudioChunk,
+    error
   };
 }

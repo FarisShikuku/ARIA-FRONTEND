@@ -10,6 +10,7 @@ interface WebSocketContextType {
   latency: number;
   sendMessage: (message: any) => void;
   sendAudioChunk: (audioData: ArrayBuffer) => void;
+  error: Error | null;
 }
 
 const WebSocketContext = createContext<WebSocketContextType | undefined>(undefined);
@@ -17,7 +18,15 @@ const WebSocketContext = createContext<WebSocketContextType | undefined>(undefin
 export const useWebSocketContext = (): WebSocketContextType => {
   const context = useContext(WebSocketContext);
   if (!context) {
-    throw new Error('useWebSocketContext must be used within a WebSocketProvider');
+    // Return fallback instead of throwing error
+    return {
+      isConnected: false,
+      lastMessage: null,
+      latency: 0,
+      sendMessage: () => {},
+      sendAudioChunk: () => {},
+      error: null
+    };
   }
   return context;
 };
@@ -26,7 +35,15 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
   const { user } = useAuth();
   const sessionId = user?.uid || 'anonymous';
 
-  const { isConnected, lastMessage, latency, sendMessage, sendAudioChunk } = useWebSocket();
+  // Only enable WebSocket if we have a session ID and are in browser environment
+  const enabled = typeof window !== 'undefined' && 
+                !window.location.hostname.includes('vercel.app') && 
+                !!sessionId;
+
+  const { isConnected, lastMessage, latency, sendMessage, sendAudioChunk, error } = useWebSocket({
+    enabled,
+    url: process.env.NEXT_PUBLIC_WS_URL || 'wss://api.aria.com/ws'
+  });
 
   return (
     <WebSocketContext.Provider
@@ -36,6 +53,7 @@ export const WebSocketProvider: React.FC<{ children: ReactNode }> = ({ children 
         latency,
         sendMessage,
         sendAudioChunk,
+        error
       }}
     >
       {children}
