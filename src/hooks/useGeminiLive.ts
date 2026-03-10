@@ -1,5 +1,3 @@
-type SpeechRecognition = typeof window extends { SpeechRecognition: infer T } ? T : never;
-
 import { useEffect, useRef, useCallback, useState } from 'react';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
