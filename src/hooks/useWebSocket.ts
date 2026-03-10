@@ -1,7 +1,9 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 
 interface WebSocketOptions {
-  url?: string;
+  sessionId?: string;              // session ID from /api/v1/sessions/start
+  token?: string;                  // optional auth token (omit for anonymous)
+  baseUrl?: string;                // base wss:// URL — defaults to NEXT_PUBLIC_WS_URL
   reconnectInterval?: number;
   maxReconnectAttempts?: number;
   enabled?: boolean;
@@ -18,27 +20,44 @@ interface WebSocketReturn {
 
 export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
   const {
-    url = process.env.NEXT_PUBLIC_WS_URL || 'wss://api.aria.com/ws',
+    sessionId,
+    token,
+    baseUrl = process.env.NEXT_PUBLIC_WS_URL || 'wss://aria-backend-1075490776634.us-central1.run.app',
     reconnectInterval = 3000,
     maxReconnectAttempts = 5,
-    enabled = true
+    enabled = true,
   } = options;
+
+  // Build the full WS URL only when we have a sessionId.
+  // Token is appended as a query param when provided (optional — backend accepts anonymous).
+  const url = sessionId
+    ? `${baseUrl}/ws/${sessionId}${token ? `?token=${encodeURIComponent(token)}` : ''}`
+    : null;
 
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [lastMessage, setLastMessage] = useState<any>(null);
   const [latency, setLatency] = useState<number>(0);
   const [error, setError] = useState<Error | null>(null);
-  
+
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttempts = useRef<number>(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const connect = useCallback(() => {
-    if (!enabled) return;
-    
+    // Don't connect without a sessionId or if disabled
+    if (!enabled || !url) return;
+
+    // Avoid double-connecting
+    if (
+      wsRef.current &&
+      (wsRef.current.readyState === WebSocket.OPEN ||
+        wsRef.current.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
+
     try {
-      // Check if WebSocket is supported
       if (typeof WebSocket === 'undefined') {
         setError(new Error('WebSocket not supported in this environment'));
         return;
@@ -51,8 +70,8 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
         setIsConnected(true);
         setError(null);
         reconnectAttempts.current = 0;
-        
-        // Start ping-pong latency measurement
+
+        // Ping-pong latency measurement every 5 s
         pingIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             const pingTime = Date.now();
@@ -61,14 +80,18 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
         }, 5000);
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         setIsConnected(false);
         if (pingIntervalRef.current) {
           clearInterval(pingIntervalRef.current);
         }
-        
-        // Only attempt reconnect if enabled and within limits
-        if (enabled && reconnectAttempts.current < maxReconnectAttempts) {
+
+        // Reconnect unless we exceeded the limit or were cleanly closed (1000)
+        if (
+          enabled &&
+          event.code !== 1000 &&
+          reconnectAttempts.current < maxReconnectAttempts
+        ) {
           reconnectTimeoutRef.current = setTimeout(() => {
             reconnectAttempts.current++;
             connect();
@@ -76,25 +99,27 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
         }
       };
 
-      ws.onerror = (event) => {
-        // Don't log the error object directly as it may contain circular references
+      ws.onerror = () => {
         setError(new Error('WebSocket connection failed'));
-        // Silent fail - don't console.error
       };
 
       ws.onmessage = (event) => {
+        // Binary frames (audio from Gemini) — pass straight through
+        if (event.data instanceof ArrayBuffer || event.data instanceof Blob) {
+          setLastMessage(event.data);
+          return;
+        }
+
         try {
-          // Try to parse as JSON first
-          const data = JSON.parse(event.data);
-          
-          // Handle pong response for latency
-          if (data.type === 'pong') {
+          const data = JSON.parse(event.data as string);
+
+          // Handle pong for latency measurement
+          if (data.type === 'pong' && typeof data.timestamp === 'number') {
             setLatency(Date.now() - data.timestamp);
           } else {
             setLastMessage(data);
           }
         } catch {
-          // Handle binary data or non-JSON messages
           setLastMessage(event.data);
         }
       };
@@ -106,38 +131,46 @@ export function useWebSocket(options: WebSocketOptions = {}): WebSocketReturn {
   useEffect(() => {
     connect();
     return () => {
+      // Clean up on unmount or when url/enabled changes
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
       if (wsRef.current) {
-        wsRef.current.close();
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (pingIntervalRef.current) {
-        clearInterval(pingIntervalRef.current);
+        wsRef.current.close(1000, 'Component unmounted');
+        wsRef.current = null;
       }
     };
   }, [connect]);
 
   const sendMessage = useCallback((data: any) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(typeof data === 'string' ? data : JSON.stringify(data));
+      wsRef.current.send(
+        typeof data === 'string' ? data : JSON.stringify(data)
+      );
     }
-    // Silently fail if not connected - no warning
   }, []);
 
   const sendAudioChunk = useCallback((audioData: ArrayBuffer) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(audioData);
+      // Prefix with 10-byte "audio" header to match backend binary protocol
+      const header = new Uint8Array(10);
+      const encoder = new TextEncoder();
+      const headerBytes = encoder.encode('audio');
+      header.set(headerBytes);
+
+      const frame = new Uint8Array(10 + audioData.byteLength);
+      frame.set(header, 0);
+      frame.set(new Uint8Array(audioData), 10);
+
+      wsRef.current.send(frame.buffer);
     }
-    // Silently fail if not connected
   }, []);
 
-  return { 
-    isConnected, 
-    lastMessage, 
-    latency, 
-    sendMessage, 
+  return {
+    isConnected,
+    lastMessage,
+    latency,
+    sendMessage,
     sendAudioChunk,
-    error
+    error,
   };
 }
