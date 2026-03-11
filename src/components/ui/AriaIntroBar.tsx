@@ -65,13 +65,11 @@ function statusLabel(state: IntroState, isListening: boolean, isSpeaking: boolea
   if (isSpeaking) return 'ARIA is speaking';
   if (isListening && state === 'active') return 'Listening…';
   switch (state) {
-    case 'waiting':     return 'Initialising…';
-    case 'speaking':    return 'ARIA is speaking';
-    case 'active':      return 'ARIA — Ready';
-    case 'muted':       return 'ARIA — Muted';
-    case 'paused':      return 'Paused';
-    case 'interrupted': return 'Interrupted';
-    default:            return '';
+    case 'waiting': return 'Initialising…';
+    case 'active':  return 'ARIA — Ready';
+    case 'muted':   return 'ARIA — Muted';
+    case 'paused':  return 'Paused';
+    default:        return '';
   }
 }
 
@@ -92,9 +90,7 @@ export const AriaIntroBar: React.FC = () => {
     disableVoice,
   } = useAriaIntro();
 
-  // REMOVED: useEffect that called enableVoice() on introState changes.
-  // useAriaIntro starts mic internally on WS ready — component must never
-  // trigger mic start. Double-calling startListening() broke micActiveRef.
+  // Mic lifecycle owned by useAriaIntro — no auto-start effect here.
 
   // ── Visibility logic ──────────────────────────────────────────────────────
   //
@@ -106,12 +102,11 @@ export const AriaIntroBar: React.FC = () => {
   const isTransitioning = introState === 'waiting';
   const isPersistentActive = introState === 'active' || introState === 'muted';
   const isVisible =
-    introState === 'speaking' ||
     introState === 'paused' ||
     introState === 'waiting' ||
     introState === 'active' ||
     introState === 'muted' ||
-    introState === 'interrupted';
+    isSpeaking;
 
   return (
     <div
@@ -150,8 +145,8 @@ export const AriaIntroBar: React.FC = () => {
           </span>
         )}
 
-        {/* Transcript during intro */}
-        {transcript && introState === 'speaking' && (
+        {/* Transcript while ARIA speaks */}
+        {transcript && isSpeaking && (
           <span className="hidden sm:block text-xs text-text-muted italic max-w-xs truncate">
             "{transcript}"
           </span>
@@ -183,7 +178,7 @@ export const AriaIntroBar: React.FC = () => {
         )}
 
         {/* ── Intro-phase controls ──────────────────────────────────────── */}
-        {(introState === 'speaking' || introState === 'waiting') && (
+        {(isSpeaking || introState === 'waiting') && (
           <>
             {/* Mic toggle for barge-in during intro */}
             <button
@@ -200,7 +195,7 @@ export const AriaIntroBar: React.FC = () => {
               {isListening ? '🎙 On' : '🎙 Off'}
             </button>
 
-            {introState === 'speaking' && (
+            {isSpeaking && (
               <button
                 onClick={pause}
                 className="px-3 py-1.5 rounded-full border border-amber/40 bg-amber/10 text-amber text-xs font-semibold hover:bg-amber/20 transition-colors"
