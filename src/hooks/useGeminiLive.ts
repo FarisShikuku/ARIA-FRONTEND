@@ -13,7 +13,18 @@
  *         gesture call stack as getUserMedia. Both AudioContexts (capture + playback)
  *         are now created in the same user gesture → browser allows both.
  *
- * 2. CAPTURE AUDIOCONTEXT UNCHANGED IN POSITION (still in startListening())
+ * 2. initContext() MOVED BEFORE getUserMedia await [RACE CONDITION FIX]
+ *    Old: initContext() was called AFTER await getUserMedia inside startListening().
+ *         useAriaIntro.activate() called sendControlMessage('start_intro') first,
+ *         then startListening(). Backend got start_intro, Gemini responded in ~300ms,
+ *         audio arrived at ws.onmessage → playPCM16() → getCtx() called before
+ *         getUserMedia had resolved → AudioContext still null → warning + no playback.
+ *    New: initContext() is the very first call in startListening(), before any await.
+ *         AudioContext is created synchronously within the user gesture, before
+ *         getUserMedia even starts. Gemini audio can arrive at any point after
+ *         activate() and the context will already exist.
+ *
+ * 3. CAPTURE AUDIOCONTEXT UNCHANGED IN POSITION (still in startListening())
  *    This was already correct — new AudioContext() is inside startListening().
  *    The bug was that useAriaIntro was calling startListening() automatically
  *    without a user gesture. That is fixed in useAriaIntro.ts, not here.
@@ -215,6 +226,13 @@ export function useGeminiLive({
     if (micActiveRef.current) return;
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
+    // ── CHANGE: initContext() BEFORE any await ──────────────────────────────
+    // Synchronous — creates AudioContext({ sampleRate: 24000 }) immediately
+    // within the user gesture call stack, before getUserMedia is awaited.
+    // Gemini responds to start_intro in ~300ms. getUserMedia takes 100-500ms.
+    // Without this, Gemini audio arrives while context is null → no playback.
+    audioPlayer.current.initContext();
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -231,12 +249,6 @@ export function useGeminiLive({
       // Capture context at browser native rate; worklet downsamples to 16kHz
       const ctx = new AudioContext();
       captureCtxRef.current = ctx;
-
-      // ── CHANGE: Init playback AudioContext here, in the same user gesture ──
-      // getUserMedia above is the user gesture anchor. We init the playback
-      // AudioContext immediately after so both contexts are created in the same
-      // trusted call stack. ws.onmessage → playPCM16 will reuse this context.
-      audioPlayer.current.initContext();
 
       await ctx.audioWorklet.addModule('/worklets/pcm-processor.js');
 

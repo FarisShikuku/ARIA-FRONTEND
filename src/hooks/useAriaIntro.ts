@@ -151,10 +151,15 @@ export function useAriaIntro(): UseAriaIntroReturn {
 
     introFiredRef.current = true;
 
-    // Send greeting prompt — Gemini responds with audio to the now-ready AudioContext
-    sendControlMessage('start_intro');
-
-    // Start mic — creates both AudioContexts within this user gesture call stack
+    // ── CHANGE: startListening BEFORE sendControlMessage ───────────────────
+    // Old order: sendControlMessage('start_intro') → startListening()
+    // Problem: backend got start_intro, created Gemini session, Gemini sent
+    // the greeting audio in ~300ms — before getUserMedia resolved (~100-500ms).
+    // playPCM16 fired with no AudioContext yet → warning + silent playback.
+    //
+    // New order: startListening() first → initContext() runs synchronously
+    // at its top (before any await) → AudioContext exists immediately →
+    // then sendControlMessage → Gemini audio arrives safely into ready context.
     if (!micStartedRef.current) {
       micStartedRef.current = true;
       try {
@@ -164,6 +169,9 @@ export function useAriaIntro(): UseAriaIntroReturn {
         // Don't block — session is still live for text/transcript
       }
     }
+
+    // Send greeting now — AudioContext is ready to receive the response
+    sendControlMessage('start_intro');
 
     setIntroState('active');
   }, [geminiState, introState, sendControlMessage, startListening]);
