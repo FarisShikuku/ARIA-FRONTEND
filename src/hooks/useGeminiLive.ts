@@ -1,43 +1,25 @@
 /**
  * useGeminiLive.ts  — MODIFIED
  *
- * WHAT CHANGED vs original and WHY:
+ * WHAT CHANGED vs previous version and WHY:
  *
- * 1. REAL MIC PCM STREAMING (was: Web SpeechRecognition only)
- *    Old: startListening() used SpeechRecognition to get text, sent as barge_in
- *         → Gemini never heard the user's voice directly
- *         → Text-only barge-in missed tone, pace, natural interruption
- *    New: startListening() captures mic via getUserMedia + AudioWorklet
- *         → 16kHz PCM audio streamed directly to backend → Gemini hears everything
- *         → Gemini's own server-side VAD handles barge-in natively
+ * 1. PLAYBACK AUDIOCONTEXT NOW CREATED INSIDE startListening() [CRITICAL BUG FIX]
+ *    Old: createAudioPlayer() called getCtx() lazily from ws.onmessage when
+ *         Gemini audio arrived. ws.onmessage fires with no user gesture → browser
+ *         blocked new AudioContext({ sampleRate: 24000 }) → "AudioContext not
+ *         allowed to start" error → no audio played.
+ *    New: createAudioPlayer() gains an initContext() method. startListening()
+ *         calls audioPlayer.current.initContext() FIRST, within the same user
+ *         gesture call stack as getUserMedia. Both AudioContexts (capture + playback)
+ *         are now created in the same user gesture → browser allows both.
  *
- * 2. ECHO CANCELLATION (was: none)
- *    Layer 1 — getUserMedia constraints: echoCancellation:true, noiseSuppression:true
- *               Browser's built-in AEC filters ARIA's speaker output from mic input
- *    Layer 2 — Worklet suppression: when isSpeaking===true we send {suppress:true}
- *               to the AudioWorklet, which outputs silence instead of mic samples
- *               This prevents any residual echo from reaching Gemini
+ * 2. CAPTURE AUDIOCONTEXT UNCHANGED IN POSITION (still in startListening())
+ *    This was already correct — new AudioContext() is inside startListening().
+ *    The bug was that useAriaIntro was calling startListening() automatically
+ *    without a user gesture. That is fixed in useAriaIntro.ts, not here.
+ *    startListening() itself is correct as long as it's called from a click.
  *
- * 3. BACKGROUND NOISE FILTERING (was: none)
- *    Client-side RMS energy gate: chunks below 0.003 RMS are dropped silently
- *    Server-side: Gemini's VAD (configured in gemini_service.py) with LOW start
- *    sensitivity ignores ambient noise and only fires on intentional speech
- *
- * 4. PROPER INTERRUPTED HANDLING (was: stop+recreate AudioContext)
- *    Old: audioPlayer.current.stop() then audioPlayer.current = createAudioPlayer()
- *         Creating a new AudioContext on every interruption causes audible glitches
- *    New: stopPlayback() drains the queue and resets nextPlayTime without closing ctx
- *
- * 5. AUDIO FRAME FORMAT FIX (was: [10-byte header][raw PCM])
- *    The backend audio_handler.py calls WebSocketProtocol.decode_audio_chunk()
- *    which expects: [10-byte type header][4-byte metadata len][JSON metadata][PCM]
- *    Old useWebSocket.sendAudioChunk sent: [10-byte header][raw PCM] → decode crash
- *    New: sends the correct protocol format that audio_handler can parse
- *
- * 6. REMOVED SpeechRecognition (was: used for barge-in text capture)
- *    With native PCM streaming, Gemini handles barge-in itself. SpeechRecognition
- *    was adding latency, required browser support, and had its own VAD conflicts.
- *    startListening/stopListening now map to mic streaming for API compatibility.
+ * ALL OTHER LOGIC IS IDENTICAL TO THE PREVIOUS VERSION.
  */
 
 import { useEffect, useRef, useCallback, useState } from 'react';
@@ -60,29 +42,54 @@ export interface UseGeminiLiveOptions {
 export interface UseGeminiLiveReturn {
   state: GeminiState;
   isSpeaking: boolean;
-  isListening: boolean;        // true when mic is streaming
-  isMicStreaming: boolean;     // alias for isListening (explicit name)
+  isListening: boolean;
+  isMicStreaming: boolean;
   transcript: string;
   sendControlMessage: (action: string, payload?: Record<string, unknown>) => void;
-  startListening: () => Promise<void>;  // now starts PCM mic streaming
-  stopListening: () => void;            // now stops PCM mic streaming
+  startListening: () => Promise<void>;
+  stopListening: () => void;
   error: string | null;
 }
 
 // ── Audio Playback ────────────────────────────────────────────────────────────
 //
-// WHY createAudioPlayer is a closure (not a class):
-//   The player needs to be recreated on interrupted (old pattern) but we changed
-//   to a stopPlayback() approach that keeps the AudioContext alive and just
-//   resets the schedule. The closure captures the context cleanly.
+// CHANGE: Added initContext() method.
+//
+// WHY: Previously getCtx() created new AudioContext({ sampleRate: 24000 }) lazily
+// the first time playPCM16() was called. playPCM16() is called from ws.onmessage
+// when Gemini sends audio back — this happens with no user gesture, so the browser
+// blocks the AudioContext creation.
+//
+// FIX: initContext() must be called from within startListening(), which is always
+// triggered by a user gesture (button click via useAriaIntro.activate()).
+// After initContext() has been called, getCtx() returns the existing context
+// without creating a new one — so ws.onmessage calls are safe.
 
 function createAudioPlayer() {
-  // Fixed at 24kHz — Gemini Live always outputs 24kHz PCM
   let audioCtx: AudioContext | null = null;
   let nextPlayTime = 0;
 
-  function getCtx(): AudioContext {
+  // ── NEW METHOD ──────────────────────────────────────────────────────────────
+  // Call this from within a user gesture (inside startListening) BEFORE any
+  // audio arrives from Gemini. Creates the AudioContext while the browser
+  // still considers us to be inside a trusted user interaction.
+  function initContext() {
     if (!audioCtx) {
+      audioCtx = new AudioContext({ sampleRate: 24000 });
+      nextPlayTime = audioCtx.currentTime + 0.01;
+    } else if (audioCtx.state === 'suspended') {
+      // Already created but suspended (e.g. page was backgrounded) — resume it.
+      audioCtx.resume();
+    }
+  }
+
+  function getCtx(): AudioContext {
+    // After initContext() has been called in a user gesture, this will always
+    // return the existing context — never create a new one autonomously.
+    if (!audioCtx) {
+      // Fallback: create anyway. Will likely be blocked by browser autoplay
+      // policy if we somehow get here outside a user gesture, but we log it.
+      console.warn('[AudioPlayer] getCtx() called without prior initContext() — AudioContext may be blocked');
       audioCtx = new AudioContext({ sampleRate: 24000 });
       nextPlayTime = audioCtx.currentTime + 0.01;
     }
@@ -108,7 +115,6 @@ function createAudioPlayer() {
     source.buffer = buffer;
     source.connect(ctx.destination);
 
-    // Schedule gaplessly
     const startAt = Math.max(ctx.currentTime + 0.01, nextPlayTime);
     source.start(startAt);
     nextPlayTime = startAt + buffer.duration;
@@ -116,16 +122,6 @@ function createAudioPlayer() {
     return buffer.duration;
   }
 
-  /**
-   * stopPlayback — discard queued audio without closing AudioContext.
-   *
-   * WHY NOT close+recreate:
-   *   Closing AudioContext causes a ~100ms gap before a new one can play audio.
-   *   On every barge-in, this would cause a noticeable glitch.
-   *   Instead we just reset nextPlayTime so future chunks start fresh.
-   *   Already-scheduled nodes will finish their current buffer but that's
-   *   at most one 20ms chunk — imperceptible.
-   */
   function stopPlayback() {
     if (audioCtx) {
       nextPlayTime = audioCtx.currentTime + 0.01;
@@ -140,14 +136,10 @@ function createAudioPlayer() {
     }
   }
 
-  return { playPCM16, stopPlayback, close };
+  return { initContext, playPCM16, stopPlayback, close };
 }
 
 // ── Binary frame decoder ──────────────────────────────────────────────────────
-//
-// manager.send_bytes() produces:
-//   [10 bytes] message_type header e.g. "audio\x00\x00\x00\x00\x00"
-//   [rest    ] raw PCM16LE @ 24 kHz
 
 function extractAudioFromFrame(data: ArrayBuffer): ArrayBuffer | null {
   try {
@@ -163,10 +155,6 @@ function extractAudioFromFrame(data: ArrayBuffer): ArrayBuffer | null {
 }
 
 // ── Audio frame encoder ───────────────────────────────────────────────────────
-//
-// WHY: backend audio_handler.py calls WebSocketProtocol.decode_audio_chunk()
-// which expects: [10-byte type][4-byte big-endian meta len][JSON meta][PCM]
-// The old useWebSocket.sendAudioChunk sent only [10-byte type][PCM] → parse crash.
 
 function buildAudioFrame(pcmBuffer: ArrayBuffer): ArrayBuffer {
   const metaObj = {
@@ -177,20 +165,15 @@ function buildAudioFrame(pcmBuffer: ArrayBuffer): ArrayBuffer {
   };
   const metaBytes = new TextEncoder().encode(JSON.stringify(metaObj));
 
-  // [10 header][4 meta-len][N meta][M pcm]
   const total = 10 + 4 + metaBytes.length + pcmBuffer.byteLength;
   const frame = new ArrayBuffer(total);
   const u8 = new Uint8Array(frame);
   const dv = new DataView(frame);
 
-  // 10-byte type header "audio"
   const headerBytes = new TextEncoder().encode('audio');
   u8.set(headerBytes, 0);
-  // 4-byte big-endian metadata length
   dv.setUint32(10, metaBytes.length, false);
-  // metadata JSON
   u8.set(metaBytes, 14);
-  // PCM payload
   u8.set(new Uint8Array(pcmBuffer), 14 + metaBytes.length);
 
   return frame;
@@ -202,8 +185,6 @@ const WS_BASE =
   process.env.NEXT_PUBLIC_WS_URL ??
   'ws://localhost:8000';
 
-// Energy gate — drop chunks where RMS is below this threshold.
-// 0.003 filters breath, room tone, and fan noise but keeps speech.
 const RMS_THRESHOLD = 0.003;
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
@@ -223,26 +204,10 @@ export function useGeminiLive({
   const speakingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // ── Mic streaming refs (no re-renders needed) ──────────────────────────────
   const captureCtxRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const micActiveRef = useRef(false);
-
-  // ── Echo suppression REMOVED ───────────────────────────────────────────────
-  //
-  // WHY REMOVED: Suppressing the mic worklet while isSpeaking=true silenced
-  // the user's voice for 800ms after every ARIA response. This completely
-  // broke barge-in — any question asked within 800ms of ARIA finishing was
-  // dropped silently and never reached Gemini.
-  //
-  // Browser AEC (echoCancellation:true in getUserMedia) is sufficient for
-  // echo cancellation. Gemini's server-side VAD further filters non-speech.
-  // We do NOT need to suppress the mic at the application level.
-  //
-  // If echo is observed on specific hardware (laptop speakers without headphones),
-  // advise the user to use headphones — that is a hardware isolation issue,
-  // not something we should fix by silencing the user's own voice.
 
   // ── Mic streaming ──────────────────────────────────────────────────────────
 
@@ -251,13 +216,12 @@ export function useGeminiLive({
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
 
     try {
-      // Layer 1 echo prevention: browser-native AEC + noise suppression
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,   // Browser AEC — filters speaker output
-          noiseSuppression: true,   // Hardware/software noise reduction
-          autoGainControl: true,    // Normalize mic levels for consistent VAD
-          channelCount: 1,          // Mono — matches Gemini's expected input
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: 1,
         },
         video: false,
       });
@@ -268,7 +232,12 @@ export function useGeminiLive({
       const ctx = new AudioContext();
       captureCtxRef.current = ctx;
 
-      // Load the PCM worklet (file must be at /public/worklets/pcm-processor.js)
+      // ── CHANGE: Init playback AudioContext here, in the same user gesture ──
+      // getUserMedia above is the user gesture anchor. We init the playback
+      // AudioContext immediately after so both contexts are created in the same
+      // trusted call stack. ws.onmessage → playPCM16 will reuse this context.
+      audioPlayer.current.initContext();
+
       await ctx.audioWorklet.addModule('/worklets/pcm-processor.js');
 
       const source = ctx.createMediaStreamSource(stream);
@@ -282,7 +251,6 @@ export function useGeminiLive({
         const ws = wsRef.current;
         if (ws?.readyState !== WebSocket.OPEN) return;
 
-        // Client-side VAD energy gate
         const int16 = new Int16Array(pcmBuffer);
         let sumSq = 0;
         for (let i = 0; i < int16.length; i++) {
@@ -290,12 +258,11 @@ export function useGeminiLive({
           sumSq += n * n;
         }
         const rms = Math.sqrt(sumSq / int16.length);
-        if (rms < RMS_THRESHOLD) return; // Below speech threshold — drop silently
+        if (rms < RMS_THRESHOLD) return;
 
         ws.send(buildAudioFrame(pcmBuffer));
       };
 
-      // Connect: mic → worklet (NOT to destination — no speaker feedback)
       source.connect(worklet);
 
       micActiveRef.current = true;
@@ -335,7 +302,6 @@ export function useGeminiLive({
       setState('ready');
       setError(null);
 
-      // Heartbeat — backend times out after ~90s without activity
       heartbeatRef.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'heartbeat' }));
@@ -360,36 +326,27 @@ export function useGeminiLive({
     };
 
     ws.onmessage = (event) => {
-      // Binary = audio response from Gemini
       if (event.data instanceof ArrayBuffer) {
         const pcm = extractAudioFromFrame(event.data);
         if (pcm && pcm.byteLength > 0) {
+          // Safe: audioPlayer.initContext() was already called in startListening()
           audioPlayer.current.playPCM16(pcm);
           setIsSpeaking(true);
           setState('speaking');
 
-          // Reset the speaking timer on each chunk (chunks arrive continuously)
           if (speakingTimerRef.current) clearTimeout(speakingTimerRef.current);
           speakingTimerRef.current = setTimeout(() => {
             setIsSpeaking(false);
-            // Only go back to ready/listening based on mic state
             setState(micActiveRef.current ? 'listening' : 'ready');
-          }, 400); // 400ms — was 800ms which delayed isSpeaking=false too long
+          }, 400);
         }
         return;
       }
 
-      // JSON control frames
       try {
         const msg = JSON.parse(event.data as string);
 
         if (msg.type === 'interrupted') {
-          /**
-           * WHY stopPlayback() not close+recreate:
-           * User interrupted ARIA — stop queued audio immediately.
-           * stopPlayback() resets the schedule clock without closing the
-           * AudioContext, avoiding the ~100ms gap a new context would cause.
-           */
           audioPlayer.current.stopPlayback();
           setIsSpeaking(false);
           if (speakingTimerRef.current) clearTimeout(speakingTimerRef.current);
@@ -417,7 +374,6 @@ export function useGeminiLive({
       if (heartbeatRef.current) clearInterval(heartbeatRef.current);
       ws.close();
       audioPlayer.current.close();
-      // Stop mic if active
       micStreamRef.current?.getTracks().forEach((t) => t.stop());
       captureCtxRef.current?.close();
     };

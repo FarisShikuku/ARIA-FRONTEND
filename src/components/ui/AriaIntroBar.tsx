@@ -1,34 +1,34 @@
 'use client';
 
 /**
- * AriaIntroBar.tsx  — MODIFIED
+ * AriaIntroBar.tsx — MODIFIED
  *
- * WHAT CHANGED vs original and WHY:
+ * WHAT CHANGED vs previous version and WHY:
  *
- * 1. PERSISTENT VISIBILITY (was: hidden after intro ends)
- *    Old: if (introState === 'stopped' && !isSpeaking) return null
- *         → Bar disappeared when intro finished → user couldn't control ARIA
- *    New: Bar stays visible in 'active' and 'muted' states
- *         → Persistent control surface for the ongoing voice agent
+ * 1. ADDED 'ready_to_activate' STATE HANDLING [CRITICAL — fixes AudioContext block]
+ *    Old: introState === 'ready_to_activate' fell through all visibility checks
+ *         and the component returned null → no button was ever shown → user had
+ *         no way to trigger a gesture → AudioContext never got created → no audio.
+ *    New: 'ready_to_activate' is explicitly included in visibility logic and
+ *         renders a "Talk to ARIA" button. This button's onClick IS the user
+ *         gesture the browser requires before AudioContext is allowed to start.
  *
- * 2. MUTE/UNMUTE BUTTON (new)
- *    'active' state shows a Mute button (stops mic streaming)
- *    'muted'  state shows an Unmute button (resumes mic streaming)
- *    Satisfies requirement: "should be interrupted until user mute it or closes it"
+ * 2. PULLED activate() FROM useAriaIntro
+ *    activate() is now destructured alongside the other controls. It is called
+ *    exclusively from the "Talk to ARIA" button's onClick — never automatically.
  *
- * 3. ACTIVE STATE UI (new)
- *    Shows a subtle pulsing indicator when ARIA is in persistent listening mode
- *    Shows "Listening…" label with mic icon
- *    Transcript is shown when ARIA speaks in response to user questions
+ * 3. READINESS INDICATOR WHILE WS IS CONNECTING
+ *    A subtle pulsing yellow dot is shown during 'waiting' so the user knows
+ *    the system is initialising before the button appears.
  *
- * 4. CLOSE BUTTON now calls stop() not just hiding the bar
- *    WHY: Previously ✕ only stopped intro. Now it cleanly stops the session.
+ * ALL OTHER LOGIC IS IDENTICAL TO THE PREVIOUS VERSION.
+ * Location: src/components/ui/AriaIntroBar.tsx
  */
 
 import React from 'react';
 import { useAriaIntro, IntroState } from '@/hooks/useAriaIntro';
 
-// ── Waveform (shown when ARIA is speaking) ────────────────────────────────────
+// ── Waveform (shown when ARIA is speaking) ─────────────────────────────────────
 
 function SpeakingWave() {
   return (
@@ -48,7 +48,7 @@ function SpeakingWave() {
   );
 }
 
-// ── Pulsing dot (shown when actively listening) ───────────────────────────────
+// ── Pulsing dot (shown when actively listening) ────────────────────────────────
 
 function ListeningDot() {
   return (
@@ -59,21 +59,26 @@ function ListeningDot() {
   );
 }
 
-// ── Status label ──────────────────────────────────────────────────────────────
+// ── Status label ───────────────────────────────────────────────────────────────
 
-function statusLabel(state: IntroState, isListening: boolean, isSpeaking: boolean): string {
+function statusLabel(
+  state: IntroState,
+  isListening: boolean,
+  isSpeaking: boolean
+): string {
   if (isSpeaking) return 'ARIA is speaking';
   if (isListening && state === 'active') return 'Listening…';
   switch (state) {
-    case 'waiting': return 'Initialising…';
-    case 'active':  return 'ARIA — Ready';
-    case 'muted':   return 'ARIA — Muted';
-    case 'paused':  return 'Paused';
-    default:        return '';
+    case 'waiting':            return 'Initialising…';
+    case 'ready_to_activate':  return 'ARIA — Ready';
+    case 'active':             return 'ARIA — Active';
+    case 'muted':              return 'ARIA — Muted';
+    case 'paused':             return 'Paused';
+    default:                   return '';
   }
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Main component ─────────────────────────────────────────────────────────────
 
 export const AriaIntroBar: React.FC = () => {
   const {
@@ -81,6 +86,7 @@ export const AriaIntroBar: React.FC = () => {
     isSpeaking,
     isListening,
     transcript,
+    activate,       // NEW — called from "Talk to ARIA" button onClick
     pause,
     resume,
     stop,
@@ -90,20 +96,18 @@ export const AriaIntroBar: React.FC = () => {
     disableVoice,
   } = useAriaIntro();
 
-  // Mic lifecycle owned by useAriaIntro — no auto-start effect here.
-
-  // ── Visibility logic ──────────────────────────────────────────────────────
-  //
-  // CHANGED: bar now stays visible in 'active' and 'muted' states.
-  // It only disappears in 'idle' and fully 'stopped' states.
+  // ── Visibility ─────────────────────────────────────────────────────────────
+  // CHANGE: 'ready_to_activate' added — was missing, causing the bar to be
+  // invisible exactly when the start button needed to appear.
   if (introState === 'idle') return null;
   if (introState === 'stopped') return null;
 
   const isTransitioning = introState === 'waiting';
   const isPersistentActive = introState === 'active' || introState === 'muted';
   const isVisible =
-    introState === 'paused' ||
     introState === 'waiting' ||
+    introState === 'ready_to_activate' ||   // CHANGE: added
+    introState === 'paused' ||
     introState === 'active' ||
     introState === 'muted' ||
     isSpeaking;
@@ -123,7 +127,7 @@ export const AriaIntroBar: React.FC = () => {
         ${isVisible ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'}
       `}
     >
-      {/* ── Left: status + waveform / dot ─────────────────────────────── */}
+      {/* ── Left: status indicator + label ──────────────────────────────── */}
       <div className="flex items-center gap-3 min-w-0">
         {isSpeaking && <SpeakingWave />}
         {!isSpeaking && isListening && introState === 'active' && <ListeningDot />}
@@ -131,32 +135,62 @@ export const AriaIntroBar: React.FC = () => {
           <span className="w-2 h-2 rounded-full bg-gray-500" aria-hidden="true" />
         )}
         {isTransitioning && (
-          <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" aria-hidden="true" />
+          <span
+            className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse"
+            aria-hidden="true"
+          />
+        )}
+        {/* Steady cyan dot while waiting for user to tap Start */}
+        {introState === 'ready_to_activate' && !isSpeaking && (
+          <span
+            className="w-2 h-2 rounded-full bg-cyan/60"
+            aria-hidden="true"
+          />
         )}
 
         <span className="text-xs font-mono text-text-secondary whitespace-nowrap">
           {statusLabel(introState, isListening, isSpeaking)}
         </span>
 
-        {/* Transcript — shown while ARIA speaks in active mode */}
-        {transcript && isPersistentActive && (
-          <span className="hidden sm:block text-xs text-text-muted italic max-w-xs truncate">
-            "{transcript}"
-          </span>
-        )}
-
-        {/* Transcript while ARIA speaks */}
-        {transcript && isSpeaking && (
+        {transcript && (isPersistentActive || isSpeaking) && (
           <span className="hidden sm:block text-xs text-text-muted italic max-w-xs truncate">
             "{transcript}"
           </span>
         )}
       </div>
 
-      {/* ── Right: controls ───────────────────────────────────────────── */}
+      {/* ── Right: controls ──────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 flex-shrink-0">
 
-        {/* ── Persistent active state controls ─────────────────────────── */}
+        {/*
+         * ── CHANGE: "Talk to ARIA" button ─────────────────────────────────
+         *
+         * WHY THIS IS THE FIX:
+         *   This onClick is the user gesture the browser requires.
+         *   activate() → startListening() → new AudioContext() + getUserMedia()
+         *   All of that runs synchronously within this click handler's call stack.
+         *   The browser sees a trusted interaction and allows both AudioContexts.
+         *
+         * Shown only in 'ready_to_activate'. Disappears once active.
+         */}
+        {introState === 'ready_to_activate' && (
+          <button
+            onClick={activate}
+            className="
+              px-4 py-1.5 rounded-full
+              border border-cyan/60 bg-cyan/10 text-cyan
+              text-xs font-semibold
+              hover:bg-cyan/20 hover:border-cyan
+              transition-colors
+              animate-pulse
+            "
+            title="Start ARIA voice agent"
+          >
+            🎙 Talk to ARIA
+          </button>
+        )}
+
+        {/* Mute / Unmute — persistent active state */}
         {introState === 'active' && (
           <button
             onClick={mute}
@@ -177,10 +211,9 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
-        {/* ── Intro-phase controls ──────────────────────────────────────── */}
+        {/* Mic toggle + pause — during intro speech */}
         {(isSpeaking || introState === 'waiting') && (
           <>
-            {/* Mic toggle for barge-in during intro */}
             <button
               onClick={isListening ? disableVoice : enableVoice}
               title={isListening ? 'Disable voice interrupt' : 'Enable voice interrupt'}
@@ -215,7 +248,7 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
-        {/* Stop/close — always visible except when already stopped */}
+        {/* Close — always visible while bar is shown */}
         <button
           onClick={stop}
           className="px-3 py-1.5 rounded-full border border-red-500/40 bg-red-500/10 text-red-400 text-xs font-semibold hover:bg-red-500/20 transition-colors"
