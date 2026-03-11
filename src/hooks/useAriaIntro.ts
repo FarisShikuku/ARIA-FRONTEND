@@ -41,6 +41,7 @@ export type IntroState =
   | 'waiting'    // Session created, connecting to WebSocket
   | 'active'     // Agent live — mic streaming, ARIA listening + responding
   | 'muted'      // User muted — session open but mic stopped
+  | 'paused'     // User paused — mic stopped, resumable
   | 'stopped';   // Session ended
 
 export interface UseAriaIntroReturn {
