@@ -1,22 +1,21 @@
 /**
  * layout.tsx  — MODIFIED
  *
- * WHAT CHANGED vs original and WHY:
+ * WHAT CHANGED vs previous version and WHY:
  *
- * 1. Added <AriaIntroBar /> inside the layout body
- *    WHY: The ARIA voice agent must survive page navigation. Mounting it in
- *    layout.tsx (the root shared layout) means it renders once and stays alive
- *    when the user moves between /, /navigate, /coach, /dashboard, etc.
- *    If it were in page.tsx it would unmount/remount on every navigation,
- *    killing the Gemini session and losing context.
+ * 1. AriaIntroBar MOVED from above <main> to the TOP of <main>
+ *    Old: AriaIntroBar was placed between <Navbar /> and <main>, using
+ *         position:fixed top:0 z-50, which caused it to overlap the Navbar
+ *         and hide the nav links behind it.
+ *    New: AriaIntroBar sits as the first child inside <main>, directly below
+ *         the Navbar in normal document flow. It no longer uses fixed
+ *         positioning to fight the Navbar — it just stacks naturally below it.
  *
- * 2. AriaIntroBar is placed AFTER <Navbar /> but OUTSIDE <main>
- *    WHY: The bar uses `position: fixed; top: 0` and z-index 50.
- *    Placing it outside <main> avoids any stacking context conflicts with
- *    page content. It sits above everything in the DOM and renders on top.
- *    The <main> pt-16 padding already accounts for the Navbar height;
- *    the AriaIntroBar is thin (py-2.5) and overlaps the Navbar space, which
- *    is intentional — it replaces the top edge with an audio status strip.
+ * 2. <main> padding adjusted
+ *    Old: pt-16 to clear the Navbar height only.
+ *    New: pt-16 still clears the Navbar. AriaIntroBar renders below that as
+ *         the first element inside <main>, so page content sits below both.
+ *         No extra padding needed — AriaIntroBar pushes content down naturally.
  */
 
 import type { Metadata } from 'next';
@@ -27,7 +26,6 @@ import { Footer } from '@/components/layout/Footer';
 import { WebSocketProvider } from '@/contexts/WebSocketContext';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { SettingsProvider } from '@/contexts/SettingsContext';
-// NEW IMPORT — AriaIntroBar is the persistent voice agent UI strip
 import { AriaIntroBar } from '@/components/ui/AriaIntroBar';
 
 const outfit = Outfit({
@@ -79,18 +77,27 @@ export default function RootLayout({
         <AuthProvider>
           <WebSocketProvider>
             <SettingsProvider>
+              {/*
+               * Navbar is fixed at top (z-40 or similar in its own styles).
+               * It always sits above everything — AriaIntroBar no longer
+               * competes with it for the top position.
+               */}
               <Navbar />
 
-              {/*
-               * AriaIntroBar — persistent voice agent strip
-               * Lives outside <main> so it's not affected by page transitions.
-               * Uses fixed positioning (z-50) so it floats above all content.
-               * useAriaIntro inside it creates its own session independently
-               * of the WebSocketContext session used for navigation/coach modes.
-               */}
-              <AriaIntroBar />
-
               <main className="pt-16 md:pt-16">
+                {/*
+                 * AriaIntroBar sits here as the first element in the page flow,
+                 * directly below the Navbar. It renders in normal document flow
+                 * so it pushes page content down naturally — no fixed positioning
+                 * needed, no overlap with nav links.
+                 *
+                 * The bar itself should use position:sticky top-16 (or whatever
+                 * the Navbar height is) if you want it to stick while scrolling,
+                 * or position:relative if you want it to scroll away with the page.
+                 * Either way it no longer covers the Navbar.
+                 */}
+                <AriaIntroBar />
+
                 {children}
               </main>
 
