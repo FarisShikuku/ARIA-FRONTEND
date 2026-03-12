@@ -1,16 +1,20 @@
 import React from 'react';
-import { AgentState } from '@/types';
+
+// CHANGED: removed `import { AgentState } from '@/types'` — the display list
+// uses plain strings so there's no type conflict with the hook's AgentState.
+// CHANGED: SILENT_WATCH → SILENT to match AgentState in useAgentState.ts.
+// Props unchanged: currentState is still a 0-based index computed by NavigationHUD.
 
 interface AgentStateIndicatorProps {
   currentState: number;
 }
 
-const states: { name: AgentState; number: number }[] = [
-  { name: 'LISTENING', number: 1 },
-  { name: 'OBSERVING', number: 2 },
+const states: { name: string; number: number }[] = [
+  { name: 'LISTENING',  number: 1 },
+  { name: 'OBSERVING',  number: 2 },
   { name: 'EVALUATING', number: 3 },
-  { name: 'COACHING', number: 4 },
-  { name: 'SILENT_WATCH', number: 5 },
+  { name: 'COACHING',   number: 4 },
+  { name: 'SILENT',     number: 5 }, // was SILENT_WATCH
 ];
 
 export const AgentStateIndicator: React.FC<AgentStateIndicatorProps> = ({ currentState }) => {
@@ -50,4 +54,4 @@ export const AgentStateIndicator: React.FC<AgentStateIndicatorProps> = ({ curren
       ))}
     </div>
   );
-}; 
+};
