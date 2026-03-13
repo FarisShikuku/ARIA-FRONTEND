@@ -99,16 +99,14 @@ export function useAssistSession() {
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
   const transcriptRef = useRef<TranscriptEntry[]>([]);
 
   // ── Aria intro (Gemini Live) ──────────────────────────────────────────────
   const aria = useAriaIntro();
 
-  // ── Media capture (sends video frames to backend) ─────────────────────────
-  const { isCapturing, startCapture, stopCapture } = useMediaCapture({
+  // ── Media capture — videoRef is owned here and returned for <video> element
+  const { videoRef, isCapturing, startCapture, stopCapture } = useMediaCapture({
     sendFrame: aria.sendBinary,
-    videoRef,
   });
 
   // ── Detect multiple cameras ───────────────────────────────────────────────
