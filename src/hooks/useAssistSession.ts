@@ -8,7 +8,7 @@
  * transcript, task timeline, step breakdown, session notes, save/export.
  */
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type RefObject } from 'react';
 import { useAriaIntro } from '@/hooks/useAriaIntro';
 import { useMediaCapture } from '@/hooks/useMediaCapture';
 
@@ -99,7 +99,7 @@ export function useAssistSession() {
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null);
 
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const transcriptRef = useRef<TranscriptEntry[]>([]);
 
   // ── Aria intro (Gemini Live) ──────────────────────────────────────────────
