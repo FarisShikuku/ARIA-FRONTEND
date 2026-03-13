@@ -1,32 +1,27 @@
 /**
- * layout.tsx  — MODIFIED
+ * layout.tsx — MODIFIED
  *
- * WHAT CHANGED vs previous version and WHY:
+ * CHANGE: <AriaIntroBar /> removed from here.
  *
- * 1. AriaIntroBar MOVED from above <main> to the TOP of <main>
- *    Old: AriaIntroBar was placed between <Navbar /> and <main>, using
- *         position:fixed top:0 z-50, which caused it to overlap the Navbar
- *         and hide the nav links behind it.
- *    New: AriaIntroBar sits as the first child inside <main>, directly below
- *         the Navbar in normal document flow. It no longer uses fixed
- *         positioning to fight the Navbar — it just stacks naturally below it.
+ * WHY: AriaIntroBar was rendering on every page (navigate, coach, dashboard,
+ * settings…) because layout.tsx wraps the entire app. The product requirement
+ * is that the bar lives on the home page only.
  *
- * 2. <main> padding adjusted
- *    Old: pt-16 to clear the Navbar height only.
- *    New: pt-16 still clears the Navbar. AriaIntroBar renders below that as
- *         the first element inside <main>, so page content sits below both.
- *         No extra padding needed — AriaIntroBar pushes content down naturally.
+ * AriaIntroBar is now rendered as the first child of the home page
+ * (src/app/page.tsx), where it uses position:fixed so it stays pinned
+ * below the Navbar while the rest of the home page scrolls normally.
+ *
+ * Everything else in this file is unchanged.
  */
 
 import type { Metadata } from 'next';
 import { Outfit, Rajdhani, IBM_Plex_Mono } from 'next/font/google';
 import './globals.css';
-import { Navbar } from '@/components/layout/Navbar';
-import { Footer } from '@/components/layout/Footer';
+import { Navbar }           from '@/components/layout/Navbar';
+import { Footer }           from '@/components/layout/Footer';
 import { WebSocketProvider } from '@/contexts/WebSocketContext';
-import { AuthProvider } from '@/contexts/AuthContext';
-import { SettingsProvider } from '@/contexts/SettingsContext';
-import { AriaIntroBar } from '@/components/ui/AriaIntroBar';
+import { AuthProvider }      from '@/contexts/AuthContext';
+import { SettingsProvider }  from '@/contexts/SettingsContext';
 
 const outfit = Outfit({
   subsets: ['latin'],
@@ -57,9 +52,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
     <html
       lang="en"
@@ -67,37 +60,18 @@ export default function RootLayout({
     >
       <head>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
-        <link
-          rel="preconnect"
-          href="https://fonts.gstatic.com"
-          crossOrigin="anonymous"
-        />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       </head>
       <body>
         <AuthProvider>
           <WebSocketProvider>
             <SettingsProvider>
-              {/*
-               * Navbar is fixed at top (z-40 or similar in its own styles).
-               * It always sits above everything — AriaIntroBar no longer
-               * competes with it for the top position.
-               */}
               <Navbar />
 
+              {/* pt-16 clears the fixed Navbar (64px). AriaIntroBar is no
+                  longer here — it lives inside the home page and uses
+                  position:fixed so it doesn't affect this padding. */}
               <main className="pt-16 md:pt-16">
-                {/*
-                 * AriaIntroBar sits here as the first element in the page flow,
-                 * directly below the Navbar. It renders in normal document flow
-                 * so it pushes page content down naturally — no fixed positioning
-                 * needed, no overlap with nav links.
-                 *
-                 * The bar itself should use position:sticky top-16 (or whatever
-                 * the Navbar height is) if you want it to stick while scrolling,
-                 * or position:relative if you want it to scroll away with the page.
-                 * Either way it no longer covers the Navbar.
-                 */}
-                <AriaIntroBar />
-
                 {children}
               </main>
 

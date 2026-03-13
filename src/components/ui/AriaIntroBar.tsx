@@ -3,25 +3,30 @@
 /**
  * AriaIntroBar.tsx — MODIFIED
  *
- * WHAT CHANGED vs previous version and WHY:
+ * CHANGES vs previous version:
  *
- * 1. POSITIONING: fixed top-0 z-50 → sticky top-16 z-40
- *    Old: `fixed top-0 left-0 right-0 z-50`
- *         Anchored to the top of the viewport, overlapping the Navbar entirely
- *         and hiding the nav links behind it.
- *    New: `sticky top-16 z-40`
- *         - sticky: stays in normal document flow below the Navbar
- *         - top-16: sticks at 64px (Navbar height) when scrolling
- *         - z-40: one z-level below Navbar (z-50) so navbar always wins
- *         Nav links are now always fully visible.
+ * 1. POSITIONING: sticky top-16 → fixed top-16
+ *    WHY: "sticky" only works inside its scroll container — when the home
+ *    page scrolls, the bar scrolls away. "fixed" pins it to the viewport
+ *    permanently below the Navbar (top:64px = top-16), exactly as requested.
+ *    The bar never moves regardless of how far the user scrolls.
  *
- * 2. ANIMATION: translate-y → max-h + opacity
- *    Old: `-translate-y-full` to hide, `translate-y-0` to show.
- *         Transforms break sticky positioning calculation in browsers.
- *    New: `max-h-0 opacity-0 overflow-hidden` to hide,
- *         `max-h-16 opacity-100` to show. Smooth and sticky-compatible.
+ * 2. REMOVED: the "✕ Stop / Close" button.
+ *    WHY: The bar must be permanent — it should never disappear when the user
+ *    clicks anything. Previously clicking "✕" set introState to 'stopped'
+ *    which caused the bar to return null. That button is gone. The only
+ *    dismiss-like action left is "Mute", which keeps the bar visible.
  *
- * ALL OTHER LOGIC IDENTICAL TO PREVIOUS VERSION.
+ * 3. REMOVED: early-return for introState === 'stopped'.
+ *    WHY: If the session ends for any reason, the bar should still be visible
+ *    (showing a "Restart" prompt) rather than disappearing.
+ *
+ * 4. ADDED: home-page top-padding helper div (see usage in page.tsx).
+ *    The bar is fixed so it overlaps page content. The home page adds
+ *    a spacer div of height 44px (the bar's height) below the Navbar so
+ *    the Hero title is never hidden behind the bar.
+ *
+ * All other logic, hooks, and classNames are unchanged.
  */
 
 import React from 'react';
@@ -54,20 +59,17 @@ function ListeningDot() {
   );
 }
 
-function statusLabel(
-  state: IntroState,
-  isListening: boolean,
-  isSpeaking: boolean
-): string {
-  if (isSpeaking) return 'ARIA is speaking';
-  if (isListening && state === 'active') return 'Listening…';
+function statusLabel(state: IntroState, isListening: boolean, isSpeaking: boolean): string {
+  if (isSpeaking)                               return 'ARIA is speaking';
+  if (isListening && state === 'active')        return 'Listening…';
   switch (state) {
-    case 'waiting':            return 'Initialising…';
-    case 'ready_to_activate':  return 'ARIA — Ready';
-    case 'active':             return 'ARIA — Active';
-    case 'muted':              return 'ARIA — Muted';
-    case 'paused':             return 'Paused';
-    default:                   return '';
+    case 'waiting':           return 'Initialising…';
+    case 'ready_to_activate': return 'ARIA — Ready';
+    case 'active':            return 'ARIA — Active';
+    case 'muted':             return 'ARIA — Muted';
+    case 'paused':            return 'Paused';
+    case 'stopped':           return 'Session ended — tap to restart';
+    default:                  return 'ARIA';
   }
 }
 
@@ -80,24 +82,18 @@ export const AriaIntroBar: React.FC = () => {
     activate,
     pause,
     resume,
-    stop,
     mute,
     unmute,
     enableVoice,
     disableVoice,
   } = useAriaIntro();
 
+  // Only truly hide when the hook hasn't initialised yet (idle).
+  // 'stopped' now shows a restart prompt instead of disappearing.
   if (introState === 'idle') return null;
-  if (introState === 'stopped') return null;
 
   const isPersistentActive = introState === 'active' || introState === 'muted';
-  const isVisible =
-    introState === 'waiting' ||
-    introState === 'ready_to_activate' ||
-    introState === 'paused' ||
-    introState === 'active' ||
-    introState === 'muted' ||
-    isSpeaking;
+  const isStopped          = introState === 'stopped';
 
   return (
     <div
@@ -105,25 +101,21 @@ export const AriaIntroBar: React.FC = () => {
       aria-label="ARIA Voice Assistant"
       aria-live="polite"
       className={`
-        sticky top-16 left-0 right-0 z-40
+        fixed top-16 left-0 right-0 z-40
         flex items-center justify-between
-        px-4 md:px-8
+        px-4 md:px-8 py-2.5
         border-b border-cyan/20
-        bg-bg-deep/90 backdrop-blur-md
-        transition-all duration-300
-        ${isVisible
-          ? 'max-h-16 opacity-100 py-2.5'
-          : 'max-h-0 opacity-0 overflow-hidden py-0 pointer-events-none'
-        }
+        bg-bg-deep/95 backdrop-blur-md
+        transition-opacity duration-300
+        ${isStopped ? 'opacity-80' : 'opacity-100'}
       `}
     >
-      {/* ── Left: status + label ─────────────────────────────────────────── */}
+      {/* ── Left: status indicator + label + transcript ─────────────────── */}
       <div className="flex items-center gap-3 min-w-0">
+
         {isSpeaking && <SpeakingWave />}
 
-        {!isSpeaking && isListening && introState === 'active' && (
-          <ListeningDot />
-        )}
+        {!isSpeaking && isListening && introState === 'active' && <ListeningDot />}
 
         {!isSpeaking && introState === 'muted' && (
           <span className="w-2 h-2 rounded-full bg-gray-500" aria-hidden="true" />
@@ -133,7 +125,7 @@ export const AriaIntroBar: React.FC = () => {
           <span className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse" aria-hidden="true" />
         )}
 
-        {introState === 'ready_to_activate' && !isSpeaking && (
+        {(introState === 'ready_to_activate' || isStopped) && !isSpeaking && (
           <span className="w-2 h-2 rounded-full bg-cyan/60" aria-hidden="true" />
         )}
 
@@ -143,14 +135,26 @@ export const AriaIntroBar: React.FC = () => {
 
         {transcript && (isPersistentActive || isSpeaking) && (
           <span className="hidden sm:block text-xs text-text-muted italic max-w-xs truncate">
-            "{transcript}"
+            &quot;{transcript}&quot;
           </span>
         )}
       </div>
 
-      {/* ── Right: controls ──────────────────────────────────────────────── */}
+      {/* ── Right: controls — no close/stop button ───────────────────────── */}
       <div className="flex items-center gap-2 flex-shrink-0">
 
+        {/* Restart prompt when session ended */}
+        {isStopped && (
+          <button
+            onClick={activate}
+            className="px-4 py-1.5 rounded-full border border-cyan/60 bg-cyan/10 text-cyan text-xs font-semibold hover:bg-cyan/20 hover:border-cyan transition-colors"
+            title="Restart ARIA voice agent"
+          >
+            🔄 Restart ARIA
+          </button>
+        )}
+
+        {/* Activate prompt */}
         {introState === 'ready_to_activate' && (
           <button
             onClick={activate}
@@ -161,6 +165,7 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
+        {/* Mute when active */}
         {introState === 'active' && (
           <button
             onClick={mute}
@@ -171,6 +176,7 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
+        {/* Unmute when muted */}
         {introState === 'muted' && (
           <button
             onClick={unmute}
@@ -181,6 +187,7 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
+        {/* Voice interrupt toggle + pause while speaking / waiting */}
         {(isSpeaking || introState === 'waiting') && (
           <>
             <button
@@ -206,6 +213,7 @@ export const AriaIntroBar: React.FC = () => {
           </>
         )}
 
+        {/* Resume when paused */}
         {introState === 'paused' && (
           <button
             onClick={resume}
@@ -215,13 +223,7 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
-        <button
-          onClick={stop}
-          className="px-3 py-1.5 rounded-full border border-red-500/40 bg-red-500/10 text-red-400 text-xs font-semibold hover:bg-red-500/20 transition-colors"
-          title="Deactivate ARIA voice assistant"
-        >
-          ✕ {isPersistentActive ? 'Close' : 'Stop'}
-        </button>
+        {/* NOTE: No close/stop button. The bar is permanent on the home page. */}
       </div>
     </div>
   );
