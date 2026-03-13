@@ -1,51 +1,56 @@
 'use client';
 
 /**
- * src/app/navigate/page.tsx — MODIFIED
+ * src/app/navigate/page.tsx — FIXED + MODIFIED
  *
- * CHANGES vs previous version:
+ * FIX: useSearchParams() must be wrapped in a <Suspense> boundary.
+ * Next.js App Router throws a build error during static generation if
+ * useSearchParams() is called in the page root without Suspense.
  *
- * 1. AUTOSTART — skip gate screen when coming from home page.
- *    WHY: Clicking "Start Navigation" on the home page now navigates to
- *    /navigate?autostart=true. Previously the user would land on this gate
- *    screen and have to click "Start Navigation" again — a redundant step.
+ * Pattern used:
+ *   NavigatePage (default export) → renders <Suspense><NavigateContent /></Suspense>
+ *   NavigateContent               → the real component, safely calls useSearchParams()
  *
- *    Implementation: useSearchParams() reads the `autostart` param.
- *    A useEffect fires once when introState reaches 'ready_to_activate' AND
- *    autostart=true, automatically calling onActivate(). The gate screen is
- *    shown briefly with a "Starting…" label while the session initialises,
- *    then the NavigationHUD mounts as normal.
- *
- *    When navigating to /navigate directly (no param), behaviour is unchanged —
- *    the gate screen shows and the user clicks "Start Navigation" manually.
- *
- * 2. REOPEN LOGIC — restart after "End Session".
- *    WHY: After clicking "End Session" the gate screen shows introState='stopped'
- *    with no way to restart — the user was stuck and had to reload the page.
- *
- *    Implementation: the stopped state now renders a "Start Again" button that
- *    calls onActivate() to begin a new session, and an "← Home" link.
- *    The existing stopped status indicator is kept unchanged.
- *
- * 3. GateScreen "connecting" label updated to show "Starting…" when
- *    autostart is in progress, so the user has feedback that something is
- *    happening after they clicked the home-page button.
- *
- * All other logic (NavigationHUD rendering, isActive check) is unchanged.
+ * CHANGES (unchanged from previous version except the Suspense split):
+ *   1. Autostart — reads ?autostart=true, skips gate screen, calls activate() automatically
+ *   2. Reopen logic — stopped state shows "Start Again" + "Back to Home" buttons
  */
 
-import React, { useEffect, useRef } from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
-import { useNavigationSession }       from '@/hooks/useNavigationSession';
-import { NavigationHUD }              from '@/components/navigation/NavigationHUD';
+import React, { Suspense, useEffect, useRef } from 'react';
+import { useSearchParams, useRouter }          from 'next/navigation';
+import { useNavigationSession }                from '@/hooks/useNavigationSession';
+import { NavigationHUD }                       from '@/components/navigation/NavigationHUD';
+
+// ── Default export: Suspense shell ────────────────────────────────────────────
 
 export default function NavigatePage() {
+  return (
+    <Suspense fallback={<LoadingScreen />}>
+      <NavigateContent />
+    </Suspense>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <div className="flex flex-col items-center justify-center w-full min-h-screen gap-4 px-6 bg-black">
+      <h1 className="text-4xl font-bold text-white tracking-tight">ARIA Navigation</h1>
+      <div className="flex items-center gap-2 text-sm">
+        <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
+        <span className="text-zinc-400">Loading…</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Inner component: safely uses useSearchParams inside Suspense ──────────────
+
+function NavigateContent() {
   const nav          = useNavigationSession();
   const searchParams = useSearchParams();
   const router       = useRouter();
   const autostart    = searchParams.get('autostart') === 'true';
 
-  // Track whether we've already fired autostart so it doesn't re-trigger
   const autostartFired = useRef(false);
 
   useEffect(() => {
@@ -109,10 +114,7 @@ function GateScreen({ introState, sessionId, autostart, onActivate, onHome }: Ga
   const isReadyToStart = introState === 'ready_to_activate';
   const isStopped      = introState === 'stopped';
 
-  // When autostart is active and we're still connecting, show "Starting…"
-  const connectingLabel = autostart && isConnecting
-    ? 'Starting ARIA…'
-    : 'Connecting to ARIA…';
+  const connectingLabel = autostart && isConnecting ? 'Starting ARIA…' : 'Connecting to ARIA…';
 
   return (
     <div className="flex flex-col items-center justify-center w-full min-h-screen gap-8 px-6">
@@ -121,7 +123,6 @@ function GateScreen({ introState, sessionId, autostart, onActivate, onHome }: Ga
         <p className="mt-2 text-zinc-400 text-sm">Real-time obstacle detection and voice guidance</p>
       </div>
 
-      {/* Status indicator */}
       <div className="flex items-center gap-2 text-sm">
         {isConnecting && (
           <>
@@ -135,7 +136,6 @@ function GateScreen({ introState, sessionId, autostart, onActivate, onHome }: Ga
             <span className="text-emerald-400">Ready</span>
           </>
         )}
-        {/* autostart=true + ready: show "Starting…" while the useEffect fires */}
         {isReadyToStart && autostart && (
           <>
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
@@ -150,7 +150,6 @@ function GateScreen({ introState, sessionId, autostart, onActivate, onHome }: Ga
         )}
       </div>
 
-      {/* Manual start button — shown only when not autostaring */}
       {isReadyToStart && !autostart && (
         <>
           <button
@@ -166,10 +165,6 @@ function GateScreen({ introState, sessionId, autostart, onActivate, onHome }: Ga
         </>
       )}
 
-      {/*
-       * REOPEN LOGIC — shown after "End Session" is clicked.
-       * "Start Again" creates a new session; "← Home" goes back to the landing page.
-       */}
       {isStopped && (
         <div className="flex flex-col items-center gap-4">
           <button
