@@ -152,7 +152,6 @@ export const CoachModeSelector: React.FC<CoachModeSelectorProps> = ({
               `}
               style={{
                 boxShadow: isSelected ? styles.glow : undefined,
-                ringColor: isSelected ? styles.dot : undefined,
               }}
             >
               {/* Icon + label */}
