@@ -25,7 +25,7 @@ export const Navbar: React.FC = () => {
 
   const navLinks = [
     { href: '/', label: 'Home' },
-    { href: '/navigate', label: 'Navigate' },
+    { href: '/navigate?autostart=true', label: 'Navigate' },
     { href: '/coach', label: 'Coach' },
     { href: '/dashboard', label: 'Dashboard' },
     { href: '/settings', label: 'Settings' },
@@ -58,7 +58,7 @@ export const Navbar: React.FC = () => {
               <Link
                 href={link.href}
                 className={`font-mono text-xs font-medium tracking-wider uppercase px-3.5 py-1.5 rounded-sm transition-all duration-200 relative ${
-                  pathname === link.href
+                  pathname === link.href.split('?')[0]
                     ? 'text-cyan bg-cyan-ghost after:absolute after:bottom-[-1px] after:left-1/2 after:-translate-x-1/2 after:w-5 after:h-0.5 after:bg-cyan after:rounded-full'
                     : 'text-text-secondary hover:text-cyan hover:bg-cyan-ghost'
                 }`}
@@ -123,7 +123,7 @@ export const Navbar: React.FC = () => {
                 key={link.href}
                 href={link.href}
                 className={`font-mono text-sm tracking-wider uppercase p-3 rounded-sm border border-transparent transition-all duration-200 flex items-center gap-2.5 ${
-                  pathname === link.href
+                  pathname === link.href.split('?')[0]
                     ? 'text-cyan bg-cyan-ghost border-cyan/15'
                     : 'text-text-secondary hover:text-cyan hover:bg-cyan-ghost'
                 }`}
