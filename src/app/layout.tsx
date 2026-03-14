@@ -1,17 +1,15 @@
 /**
- * layout.tsx — MODIFIED
+ * layout.tsx — UPDATED
  *
- * CHANGE: <AriaIntroBar /> removed from here.
+ * CHANGE: AriaProvider added.
  *
- * WHY: AriaIntroBar was rendering on every page (navigate, coach, dashboard,
- * settings…) because layout.tsx wraps the entire app. The product requirement
- * is that the bar lives on the home page only.
+ * WHY: useAriaIntro was being called independently on each page (home, assist)
+ * creating a new Gemini Live session per page. This means voice stops when
+ * navigating, and sessions conflict.
  *
- * AriaIntroBar is now rendered as the first child of the home page
- * (src/app/page.tsx), where it uses position:fixed so it stays pinned
- * below the Navbar while the rest of the home page scrolls normally.
- *
- * Everything else in this file is unchanged.
+ * AriaProvider lifts useAriaIntro to the layout level — ONE shared session
+ * for the entire app. Pages call setPageFocus('assist' | 'home' | ...) to
+ * shift ARIA's personality without creating a new session.
  */
 
 import type { Metadata } from 'next';
@@ -22,6 +20,7 @@ import { Footer }           from '@/components/layout/Footer';
 import { WebSocketProvider } from '@/contexts/WebSocketContext';
 import { AuthProvider }      from '@/contexts/AuthContext';
 import { SettingsProvider }  from '@/contexts/SettingsContext';
+import { AriaProvider }      from '@/contexts/AriaContext';
 
 const outfit = Outfit({
   subsets: ['latin'],
@@ -66,16 +65,17 @@ export default function RootLayout({
         <AuthProvider>
           <WebSocketProvider>
             <SettingsProvider>
-              <Navbar />
+              {/* AriaProvider — ONE shared Gemini Live session for all pages.
+                  Pages call setPageFocus() to shift ARIA's persona. */}
+              <AriaProvider>
+                <Navbar />
 
-              {/* pt-16 clears the fixed Navbar (64px). AriaIntroBar is no
-                  longer here — it lives inside the home page and uses
-                  position:fixed so it doesn't affect this padding. */}
-              <main className="pt-16 md:pt-16">
-                {children}
-              </main>
+                <main className="pt-16 md:pt-16">
+                  {children}
+                </main>
 
-              <Footer />
+                <Footer />
+              </AriaProvider>
             </SettingsProvider>
           </WebSocketProvider>
         </AuthProvider>

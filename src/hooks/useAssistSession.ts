@@ -9,7 +9,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback, type RefObject } from 'react';
-import { useAriaIntro } from '@/hooks/useAriaIntro';
+import { useAriaContext } from '@/contexts/AriaContext';
 import { useMediaCapture } from '@/hooks/useMediaCapture';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -101,8 +101,8 @@ export function useAssistSession() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const transcriptRef = useRef<TranscriptEntry[]>([]);
 
-  // ── Aria intro (Gemini Live) ──────────────────────────────────────────────
-  const aria = useAriaIntro();
+  // ── Shared ARIA session from context ─────────────────────────────────────
+  const aria = useAriaContext();
 
   // ── Media capture — videoRef is owned here and returned for <video> element
   const { videoRef, isCapturing, startCapture, stopCapture } = useMediaCapture({
@@ -211,54 +211,42 @@ export function useAssistSession() {
 
   const startSession = useCallback(async (initialQuery?: string) => {
     try {
-      // Activate Gemini Live
-      await aria.activate();
-
-      // Send mode + system prompt hint
-      setTimeout(() => {
-        aria.sendText(JSON.stringify({ type: 'set_mode', mode: 'assist' }));
-        aria.sendText(JSON.stringify({ type: 'control', action: 'start_intro' }));
-
-        // Send system prompt context to Gemini
-        if (initialQuery) {
-          setTimeout(() => {
-            aria.sendText(JSON.stringify({
-              type: 'control',
-              action: 'update_context',
-              context: {
-                mode: 'assist',
-                instruction: ASSIST_SYSTEM_PROMPT,
-                initial_query: initialQuery,
-              },
-            }));
-          }, 800);
-        }
-      }, 400);
-
-      // Start video capture
-      if (isCameraOn) {
-        await startCapture();
-      }
-
-      // Start listening
+      // ── Step 1: Start mic so ARIA can hear the user
+      // enableVoice() calls startListening() internally which opens the
+      // AudioContext and starts streaming PCM to the backend.
       await aria.enableVoice();
 
+      // ── Step 2: Send start_assist to backend.
+      // This tells the router to:
+      //   a) set session mode to "assist" (video skips object detection)
+      //   b) send an Assist-focused greeting to Gemini (makes ARIA speak first)
+      //   c) create a Gemini session if one doesn't exist yet
+      // We wait 200ms for the mic AudioContext to settle before sending.
+      await new Promise<void>((resolve) => setTimeout(resolve, 200));
+      aria.sendText(JSON.stringify({
+        type: 'control',
+        action: 'start_assist',
+        initial_query: initialQuery || '',
+      }));
+
+      // ── Step 3: Start video capture (camera → backend frames)
+      await startCapture();
+
+      // ── Step 4: Update UI state
       setPhase('active');
       setSessionDuration(0);
       setTranscript([]);
       setSteps([]);
       setTimeline([]);
       setTaskTitle(initialQuery ? formatTitle(initialQuery) : '');
-
-      if (initialQuery) {
-        addTimelineEvent(`Session started: "${initialQuery}"`, 'info');
-      } else {
-        addTimelineEvent('Session started', 'info');
-      }
+      addTimelineEvent(
+        initialQuery ? `Task: "${initialQuery}"` : 'Session started — show ARIA your task',
+        'info'
+      );
     } catch (err) {
       console.error('[ASSIST] startSession error:', err);
     }
-  }, [aria, isCameraOn, startCapture]); // eslint-disable-line
+  }, [aria, startCapture]); // eslint-disable-line
 
   const pauseSession = useCallback(() => {
     aria.pause();

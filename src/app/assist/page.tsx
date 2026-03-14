@@ -7,13 +7,21 @@
  * Shows a full-dashboard when active, an immersive idle splash when not.
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAssistSession } from '@/hooks/useAssistSession';
+import { useAriaContext } from '@/contexts/AriaContext';
 import { AssistAgentBar } from '@/components/assist/AssistAgentBar';
 import { AssistLayout } from '@/components/assist/AssistLayout';
 import { TaskShortcuts } from '@/components/assist/TaskShortcuts';
 
 export default function AssistPage() {
+  const { setPageFocus } = useAriaContext();
+
+  // Shift ARIA's persona to Assist-focused on mount
+  useEffect(() => {
+    setPageFocus('assist');
+  }, [setPageFocus]);
+
   const {
     session,
     videoRef,
