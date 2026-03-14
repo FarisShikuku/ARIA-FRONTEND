@@ -59,6 +59,15 @@ function createAudioPlayer() {
   let nextPlayTime = 0;
   let chunksPlayed = 0;
 
+  // Track every scheduled AudioBufferSourceNode so we can stop them on barge-in.
+  // Nodes are added when scheduled and auto-removed when they finish playing.
+  const activeSources = new Set<AudioBufferSourceNode>();
+
+  // FIX: A flush flag that causes playPCM16() to silently drop incoming chunks
+  // during the brief window after a barge-in while the backend drains.
+  // Set to true on barge-in, cleared when a new turn's first audio arrives.
+  let isFlushing = false;
+
   function initContext() {
     if (!audioCtx) {
       audioCtx = new AudioContext({ sampleRate: 24000 });
@@ -83,6 +92,14 @@ function createAudioPlayer() {
   }
 
   function playPCM16(pcmData: ArrayBuffer): number {
+    // FIX: Drop chunks that arrive after a barge-in but before the next real turn.
+    // These are the leftover chunks from the interrupted turn that the backend
+    // already sent before it received the barge-in signal.
+    if (isFlushing) {
+      console.log('[PLAYBACK] 🚫 Dropping post-interrupt audio chunk (flush in progress)');
+      return 0;
+    }
+
     const ctx = getCtx();
 
     if (ctx.state === 'suspended') {
@@ -113,6 +130,10 @@ function createAudioPlayer() {
     source.buffer = buffer;
     source.connect(ctx.destination);
 
+    // FIX: Track this source node so stopPlayback() can hard-stop it.
+    activeSources.add(source);
+    source.onended = () => { activeSources.delete(source); };
+
     const startAt = Math.max(ctx.currentTime + 0.01, nextPlayTime);
     source.start(startAt);
     nextPlayTime = startAt + buffer.duration;
@@ -130,13 +151,46 @@ function createAudioPlayer() {
   }
 
   function stopPlayback() {
-    if (audioCtx) {
-      nextPlayTime = audioCtx.currentTime + 0.01;
-      console.log('[PLAYBACK] ⏹️ Playback stopped (barge-in)');
+    if (!audioCtx) return;
+
+    // FIX 1: Hard-stop every active AudioBufferSourceNode immediately.
+    // Previously only nextPlayTime was reset, so nodes already started in the
+    // AudioContext scheduler kept playing until their buffer ran out.
+    let stopped = 0;
+    activeSources.forEach((src) => {
+      try {
+        src.stop();
+      } catch {
+        // Already stopped — safe to ignore
+      }
+      activeSources.delete(src);
+      stopped++;
+    });
+
+    // FIX 2: Reset the playhead so new audio starts from now, not the future.
+    nextPlayTime = audioCtx.currentTime + 0.01;
+
+    // FIX 3: Enter flush mode — drop incoming audio chunks from the interrupted
+    // turn that are still in-flight from the backend. The backend sends barge-in
+    // and then continues draining buffered chunks for ~200–500ms. Those chunks
+    // must be discarded, not played.
+    isFlushing = true;
+
+    console.log(`[PLAYBACK] ⏹️ Barge-in stop: ${stopped} active sources hard-stopped, flush mode ON`);
+  }
+
+  function clearFlush() {
+    // Called when the first audio chunk of a new (post-interrupt) turn arrives,
+    // signalling that the backend has finished draining the old turn's chunks.
+    if (isFlushing) {
+      isFlushing = false;
+      console.log('[PLAYBACK] ✅ Flush cleared — resuming normal audio playback');
     }
   }
 
   function close() {
+    activeSources.forEach((src) => { try { src.stop(); } catch { /* ok */ } });
+    activeSources.clear();
     if (audioCtx) {
       audioCtx.close();
       audioCtx = null;
@@ -145,7 +199,7 @@ function createAudioPlayer() {
     }
   }
 
-  return { initContext, playPCM16, stopPlayback, close };
+  return { initContext, playPCM16, stopPlayback, clearFlush, close };
 }
 
 // ── Binary frame decoder ──────────────────────────────────────────────────────
@@ -409,15 +463,32 @@ export function useGeminiLive({
         const pcm = extractAudioFromFrame(event.data);
         if (pcm && pcm.byteLength > 0) {
           console.debug(`[AUDIO-IN] Extracted PCM: ${pcm.byteLength} bytes → playback`);
-          audioPlayer.current.playPCM16(pcm);
-          setIsSpeaking(true);
-          setState('speaking');
 
-          if (speakingTimerRef.current) clearTimeout(speakingTimerRef.current);
-          speakingTimerRef.current = setTimeout(() => {
-            setIsSpeaking(false);
-            setState(micActiveRef.current ? 'listening' : 'ready');
-          }, 400);
+          // FIX: clearFlush() is called before playPCM16(). If we are in flush
+          // mode (post-barge-in drain), playPCM16 will drop this chunk silently.
+          // clearFlush() marks that the *next* chunk (this one's successor) can play —
+          // the backend has finished draining the old interrupted turn's audio by
+          // the time the new turn's first audio chunk arrives.
+          //
+          // The sequence is:
+          //  1. interrupted msg → stopPlayback() → flush=true
+          //  2. leftover chunks from old turn → playPCM16 drops them (flush=true)
+          //  3. new turn first chunk arrives → clearFlush() → flush=false → plays normally
+          //
+          // clearFlush is safe to call on every chunk — it's a no-op when not flushing.
+          audioPlayer.current.clearFlush();
+
+          const played = audioPlayer.current.playPCM16(pcm);
+          if (played > 0) {
+            setIsSpeaking(true);
+            setState('speaking');
+
+            if (speakingTimerRef.current) clearTimeout(speakingTimerRef.current);
+            speakingTimerRef.current = setTimeout(() => {
+              setIsSpeaking(false);
+              setState(micActiveRef.current ? 'listening' : 'ready');
+            }, 400);
+          }
         } else {
           console.warn(`[AUDIO-IN] ⚠️ Could not extract PCM from ${event.data.byteLength}b frame`);
         }
@@ -447,10 +518,17 @@ export function useGeminiLive({
         }
 
         if (msg.type === 'interrupted') {
-          console.log('[WS] ⚡ Barge-in detected — stopping playback');
+          console.log('[WS] ⚡ Barge-in detected — hard-stopping all active audio, entering flush mode');
+          // stopPlayback() now: (1) hard-stops all AudioBufferSourceNodes,
+          // (2) resets nextPlayTime, (3) sets isFlushing=true to drop leftover chunks.
           audioPlayer.current.stopPlayback();
           setIsSpeaking(false);
-          if (speakingTimerRef.current) clearTimeout(speakingTimerRef.current);
+          // Clear the speaking timer so it can't re-set isSpeaking=false after
+          // ARIA's acknowledge response starts playing.
+          if (speakingTimerRef.current) {
+            clearTimeout(speakingTimerRef.current);
+            speakingTimerRef.current = null;
+          }
           setState(micActiveRef.current ? 'listening' : 'ready');
         }
 
