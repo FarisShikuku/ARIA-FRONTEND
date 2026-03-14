@@ -89,13 +89,12 @@ export const AriaIntroBar: React.FC = () => {
   } = useAriaIntro();
 
   // Only truly hide when the hook hasn't initialised yet (idle).
-  // 'stopped' now shows a restart prompt instead of disappearing.
   if (introState === 'idle') return null;
 
   // FIX: If ARIA is actually speaking or listening, the session is live — never
   // show the "stopped" UI even if introState got set to 'stopped' incorrectly.
   // This happens when a transient WS error sets geminiState='error' which flows
-  // to introState='stopped', but the session actually recovers and keeps working.
+  // to introState='stopped', but the session recovers and keeps working.
   const isActuallyActive = isSpeaking || isListening;
   const isStopped = introState === 'stopped' && !isActuallyActive;
   const isPersistentActive = introState === 'active' || introState === 'muted' || isActuallyActive;
@@ -151,7 +150,7 @@ export const AriaIntroBar: React.FC = () => {
         {/* Restart prompt when session ended */}
         {isStopped && (
           <button
-            onClick={activate}
+            onClick={() => activate()}
             className="px-4 py-1.5 rounded-full border border-cyan/60 bg-cyan/10 text-cyan text-xs font-semibold hover:bg-cyan/20 hover:border-cyan transition-colors"
             title="Restart ARIA voice agent"
           >
@@ -162,7 +161,7 @@ export const AriaIntroBar: React.FC = () => {
         {/* Activate prompt */}
         {introState === 'ready_to_activate' && (
           <button
-            onClick={activate}
+            onClick={() => activate()}
             className="px-4 py-1.5 rounded-full border border-cyan/60 bg-cyan/10 text-cyan text-xs font-semibold hover:bg-cyan/20 hover:border-cyan transition-colors animate-pulse"
             title="Start ARIA voice agent"
           >
