@@ -1,5 +1,29 @@
 'use client';
 
+/**
+ * src/components/navigation/NavigationHUD.tsx
+ *
+ * CHANGES vs previous version:
+ *
+ * 1. GOOGLE MAPS REPLACES IFRAME
+ *    WHY: The iframe was static — it pinned one location and never updated.
+ *    Google Maps embed API also blocks without proper referrer config.
+ *    Now uses GoogleMap component with live blue dot, route polyline,
+ *    destination marker. Updates on every GPS fix.
+ *
+ * 2. DESTINATION SEARCH ADDED TO LEFT PANEL
+ *    WHY: User needs to enter a destination to get routing. DestinationSearch
+ *    includes Places Autocomplete, transport mode selector, and route summary.
+ *
+ * 3. ROUTESTEPS NOW RECEIVES REAL STEPS FROM GOOGLE DIRECTIONS
+ *    WHY: Previously RouteSteps had hardcoded San Francisco data.
+ *    Now receives live steps from useGoogleMapsRoute via useNavigationSession.
+ *
+ * 4. HEADER CONTROLS REMOVED — MOVED TO NavigationAgentBar
+ *    WHY: Mute/End controls live in the fixed floating bar at the top.
+ *    The HUD header shows only read-only status tags.
+ */
+
 import React from 'react';
 import { HUDPanel } from './HUDPanel';
 import { GPSWidget } from './GPSWidget';
@@ -9,10 +33,13 @@ import { ARIAVoiceCard } from './AriaVoiceCard';
 import { RouteSteps } from './RouteSteps';
 import { HapticPatterns } from './HapticPatterns';
 import { QuickSOS } from './QuickSOS';
+import { GoogleMap } from './GoogleMap';
+import { DestinationSearch } from './DestinationSearch';
 import { Tag } from '@/components/ui/Tag';
 import type { AgentState } from '@/hooks/useAgentState';
 import type { Environment } from '@/hooks/useGeolocation';
 import type { DetectionResult } from '@/hooks/useNavigationSession';
+import type { MapsRoute, TravelMode } from '@/hooks/useGoogleMapsRoute';
 
 interface NavigationHUDProps {
   agentState: AgentState;
@@ -27,6 +54,16 @@ interface NavigationHUDProps {
   gpsAccuracy: number | null;
   position: GeolocationCoordinates | null;
   sessionId: string | null;
+  // Route props
+  route: MapsRoute | null;
+  currentAddress: string | null;
+  travelMode: TravelMode;
+  setTravelMode: (mode: TravelMode) => void;
+  calculateRoute: (destination: string) => Promise<void>;
+  clearRoute: () => void;
+  destination: string | null;
+  routeLoading?: boolean;
+  routeError?: string | null;
 }
 
 export const NavigationHUD: React.FC<NavigationHUDProps> = ({
@@ -42,6 +79,15 @@ export const NavigationHUD: React.FC<NavigationHUDProps> = ({
   gpsAccuracy,
   position,
   sessionId,
+  route,
+  currentAddress,
+  travelMode,
+  setTravelMode,
+  calculateRoute,
+  clearRoute,
+  destination,
+  routeLoading = false,
+  routeError = null,
 }) => {
   const gpsLocked = gpsAccuracy !== null && gpsAccuracy <= 20;
   const envColor = environment === 'indoor' ? 'amber' : 'cyan';
@@ -66,49 +112,60 @@ export const NavigationHUD: React.FC<NavigationHUDProps> = ({
         <div className="flex flex-wrap gap-2.5 items-center">
           <Tag color={envColor}>{envTag}</Tag>
           {gpsLocked && <Tag color="green">GPS LOCKED</Tag>}
+          {route && <Tag color="cyan">ROUTE ACTIVE</Tag>}
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr_280px] gap-4 lg:gap-5">
 
+        {/* Left panel — map + destination search + detection */}
         <div className="flex flex-col gap-4">
+
           <HUDPanel title="Current Location">
-            {position ? (
-              <div className="flex flex-col gap-3">
-                <div className="w-full h-36 rounded-lg overflow-hidden border border-border bg-bg-surface relative">
-                  <iframe
-                    title="Current Location Map"
-                    width="100%"
-                    height="100%"
-                    frameBorder="0"
-                    src={`https://maps.google.com/maps?q=${position.latitude},${position.longitude}&z=16&output=embed`}
-                    className="w-full h-full"
-                  />
-                  <div className="absolute top-1.5 left-1.5 bg-black/70 rounded px-1.5 py-0.5 font-mono text-[9px] text-cyan">
-                    LIVE
-                  </div>
-                </div>
-                <div className="font-mono text-[10px] text-text-muted break-all">{latLng}</div>
-                <GPSWidget environment={environment} accuracy={gpsAccuracy} />
+            <div className="flex flex-col gap-3">
+              {/* Live Google Map */}
+              <div className="w-full h-52 rounded-lg overflow-hidden border border-border bg-bg-surface">
+                <GoogleMap
+                  position={position}
+                  route={route}
+                  destination={destination}
+                />
               </div>
-            ) : (
-              <div className="flex flex-col gap-3">
-                <div className="w-full h-36 rounded-lg border border-border bg-bg-surface flex items-center justify-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <div className="w-4 h-4 rounded-full border-2 border-cyan/30 border-t-cyan animate-spin" />
-                    <span className="font-mono text-[10px] text-text-muted">Acquiring GPS…</span>
-                  </div>
+
+              {/* Address + coords */}
+              {currentAddress && (
+                <div className="font-mono text-[10px] text-text-secondary leading-relaxed">
+                  📍 {currentAddress}
                 </div>
-                <GPSWidget environment={environment} accuracy={gpsAccuracy} />
-              </div>
-            )}
+              )}
+              {latLng && !currentAddress && (
+                <div className="font-mono text-[10px] text-text-muted">{latLng}</div>
+              )}
+
+              <GPSWidget environment={environment} accuracy={gpsAccuracy} />
+            </div>
+          </HUDPanel>
+
+          {/* Destination search */}
+          <HUDPanel title="Get Directions">
+            <DestinationSearch
+              onSearch={calculateRoute}
+              onClear={clearRoute}
+              onModeChange={setTravelMode}
+              travelMode={travelMode}
+              route={route}
+              isLoading={routeLoading}
+              error={routeError ?? null}
+            />
           </HUDPanel>
 
           <HUDPanel title="Object Detection">
             <DetectionLog detections={detections} />
           </HUDPanel>
+
         </div>
 
+        {/* Center panel — camera + ARIA voice */}
         <div className="flex flex-col gap-4">
           <CameraFeed
             videoRef={videoRef}
@@ -118,9 +175,10 @@ export const NavigationHUD: React.FC<NavigationHUDProps> = ({
           <ARIAVoiceCard isSpeaking={isSpeaking} transcript={transcript} />
         </div>
 
+        {/* Right panel — route steps + haptic + SOS */}
         <div className="flex flex-col gap-4">
           <HUDPanel title="Active Route">
-            <RouteSteps />
+            <RouteSteps steps={route?.steps} />
           </HUDPanel>
 
           <HUDPanel title="Haptic Feedback">
