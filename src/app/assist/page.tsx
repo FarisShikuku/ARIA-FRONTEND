@@ -3,24 +3,28 @@
 /**
  * src/app/assist/page.tsx
  *
- * ARIA Assist — Live visual AI assistant for daily tasks.
- * Shows a full-dashboard when active, an immersive idle splash when not.
+ * TWO STATES:
+ *
+ * 1. idle / listening  → ARIA bar at top (auto-started), task shortcut grid visible.
+ *                        No video. ARIA introduces itself and waits for task.
+ *
+ * 2. active / paused   → Shortcut grid hidden. Video feed + transcript shown.
+ *                        ARIA bar stays at top with controls.
+ *
+ * Task selection triggers the idle→active transition (click OR voice via ARIA).
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { useAssistSession } from '@/hooks/useAssistSession';
 import { useAriaContext } from '@/contexts/AriaContext';
 import { AssistAgentBar } from '@/components/assist/AssistAgentBar';
-import { AssistLayout } from '@/components/assist/AssistLayout';
+import { AssistVideoFeed } from '@/components/assist/AssistVideoFeed';
+import { AssistTranscript } from '@/components/assist/AssistTranscript';
+import { AssistSidebar } from '@/components/assist/AssistSidebar';
 import { TaskShortcuts } from '@/components/assist/TaskShortcuts';
 
 export default function AssistPage() {
   const { setPageFocus } = useAriaContext();
-
-  // Shift ARIA's persona to Assist-focused on mount
-  useEffect(() => {
-    setPageFocus('assist');
-  }, [setPageFocus]);
 
   const {
     session,
@@ -30,6 +34,7 @@ export default function AssistPage() {
     pauseSession,
     resumeSession,
     endSession,
+    selectTask,
     toggleMute,
     toggleCamera,
     flipCamera,
@@ -38,34 +43,35 @@ export default function AssistPage() {
     toggleStep,
     updateSessionNotes,
     exportSession,
-    sendQuickTask,
   } = useAssistSession();
 
-  const [inputQuery, setInputQuery] = useState('');
-  const [screenshotDismissed, setScreenshotDismissed] = useState(false);
+  // ── On mount: shift ARIA focus + auto-start voice session ────────────────
+  useEffect(() => {
+    setPageFocus('assist');
+    // Small delay so WS is confirmed open before sending start_assist
+    const t = setTimeout(() => { startSession(); }, 600);
+    return () => clearTimeout(t);
+  }, []); // eslint-disable-line
 
-  const handleStart = (query?: string) => {
-    setScreenshotDismissed(false);
-    startSession(query || inputQuery || undefined);
-  };
-
-  const handleQuickTask = (query: string, label: string) => {
-    setInputQuery(label);
-    sendQuickTask(query);
-  };
-
-  const handleDismissScreenshot = () => {
-    setScreenshotDismissed(true);
-  };
-
-  const isActive = session.phase === 'active' || session.phase === 'paused';
   const transcriptText = session.transcript.length > 0
     ? session.transcript[session.transcript.length - 1]?.text ?? ''
     : '';
 
+  const showShortcuts = session.phase === 'idle' || session.phase === 'listening' || session.phase === 'ended';
+  const showVideo     = session.phase === 'active' || session.phase === 'paused';
+
+  // When user clicks a shortcut, selectTask transitions to active + starts video
+  const handleSelectTask = (query: string, label: string) => {
+    selectTask(query, label);
+  };
+
+  const handleDismissScreenshot = () => {
+    // handled internally in AssistVideoFeed via onDismissScreenshot
+  };
+
   return (
     <>
-      {/* Fixed agent bar (below navbar) */}
+      {/* ── Agent bar — always at top (below navbar) ── */}
       <AssistAgentBar
         phase={session.phase}
         taskTitle={session.taskTitle}
@@ -79,155 +85,87 @@ export default function AssistPage() {
         onEnd={endSession}
       />
 
-      {/* Page content — pt-12 when bar is visible */}
+      {/* ── Page content — always padded for bar (48px) + navbar (64px) ── */}
       <div
-        className={`min-h-screen transition-all duration-300 ${isActive ? 'pt-12' : ''}`}
-        style={{ background: '#070c07' }}
+        className="min-h-screen"
+        style={{ background: '#070c07', paddingTop: '48px' }}
       >
-        {/* ── IDLE / ENDED: splash screen ── */}
-        {(session.phase === 'idle' || session.phase === 'ended') && (
-          <div className="max-w-3xl mx-auto px-4 py-12">
 
-            {/* Hero */}
-            <div className="text-center mb-12">
-              {/* Glow orb */}
+        {/* ── IDLE / LISTENING: shortcut grid ── */}
+        {showShortcuts && (
+          <div className="max-w-2xl mx-auto px-4 py-10">
+
+            {/* Minimal header */}
+            <div className="text-center mb-8">
               <div
-                className="w-24 h-24 rounded-full mx-auto mb-6 flex items-center justify-center relative"
+                className="w-14 h-14 rounded-2xl mx-auto mb-4 flex items-center justify-center"
                 style={{
-                  background: 'radial-gradient(circle, rgba(52,211,153,0.2) 0%, rgba(52,211,153,0.04) 70%)',
-                  boxShadow: '0 0 60px rgba(52,211,153,0.15), 0 0 120px rgba(52,211,153,0.07)',
-                  border: '1px solid rgba(52,211,153,0.2)',
+                  background: 'radial-gradient(circle, rgba(52,211,153,0.15) 0%, rgba(52,211,153,0.03) 100%)',
+                  border: '1px solid rgba(52,211,153,0.15)',
                 }}
               >
-                <span className="text-4xl">✦</span>
-                {/* Pulse rings */}
-                <div
-                  className="absolute inset-0 rounded-full"
-                  style={{
-                    border: '1px solid rgba(52,211,153,0.15)',
-                    animation: 'ping 2s ease-out infinite',
-                    transform: 'scale(1.3)',
-                  }}
-                />
+                <span className="text-2xl">✦</span>
               </div>
-
-              <h1
-                className="text-4xl font-bold tracking-tight mb-3"
-                style={{ color: '#f0fdf4', fontFamily: 'system-ui, sans-serif' }}
-              >
-                ARIA{' '}
-                <span
-                  style={{
-                    background: 'linear-gradient(135deg, #34d399 0%, #6ee7b7 100%)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                  }}
-                >
-                  Assist
-                </span>
+              <h1 className="text-2xl font-bold text-white/80 mb-1 tracking-tight">
+                ARIA <span style={{ color: '#34d399' }}>Assist</span>
               </h1>
-              <p className="text-base text-white/40 max-w-md mx-auto leading-relaxed">
-                Your live AI assistant for any task. Point your camera, start talking —
-                ARIA sees what you see and helps you through it.
+              <p className="text-sm text-white/30 max-w-xs mx-auto">
+                {session.phase === 'listening'
+                  ? 'Tell me what you need help with, or tap a task below'
+                  : 'Your live AI assistant for any task'}
               </p>
-
-              {session.phase === 'ended' && (
-                <div
-                  className="inline-flex items-center gap-2 mt-4 px-4 py-2 rounded-full text-sm"
-                  style={{
-                    background: 'rgba(52,211,153,0.1)',
-                    border: '1px solid rgba(52,211,153,0.2)',
-                    color: '#34d399',
-                  }}
-                >
-                  ✓ Session ended — start a new one below
-                </div>
-              )}
             </div>
 
-            {/* Input + start */}
-            <div className="mb-10">
-              <div className="relative">
-                <input
-                  type="text"
-                  value={inputQuery}
-                  onChange={(e) => setInputQuery(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') handleStart(); }}
-                  placeholder="What do you need help with? Or pick a task below..."
-                  className="w-full px-5 py-4 rounded-2xl text-sm outline-none transition-all pr-32"
-                  style={{
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(52,211,153,0.2)',
-                    color: 'rgba(255,255,255,0.85)',
-                    caretColor: '#34d399',
-                  }}
-                  onFocus={(e) => { e.target.style.borderColor = 'rgba(52,211,153,0.45)'; e.target.style.background = 'rgba(255,255,255,0.06)'; }}
-                  onBlur={(e) => { e.target.style.borderColor = 'rgba(52,211,153,0.2)'; e.target.style.background = 'rgba(255,255,255,0.04)'; }}
-                />
-                <button
-                  onClick={() => handleStart()}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 px-5 py-2.5 rounded-xl text-sm font-semibold transition-all hover:brightness-110 active:scale-95"
-                  style={{
-                    background: 'linear-gradient(135deg, rgba(52,211,153,0.8) 0%, rgba(16,185,129,0.8) 100%)',
-                    color: '#0a0f0a',
-                  }}
-                >
-                  Start →
-                </button>
-              </div>
-            </div>
+            {/* Task shortcuts — full grid */}
+            <TaskShortcuts onSelect={handleSelectTask} />
 
-            {/* Quick task shortcuts */}
-            <div>
-              <p className="text-xs text-white/25 uppercase tracking-widest font-mono mb-4 text-center">
-                Or jump straight in
-              </p>
-              <TaskShortcuts onSelect={handleQuickTask} />
-            </div>
-
-            {/* Feature pills */}
-            <div className="flex flex-wrap justify-center gap-2 mt-10">
-              {[
-                '📷 Front & back camera',
-                '🎤 Live voice',
-                '📋 Step breakdown',
-                '📸 Screenshot',
-                '💾 Save session',
-                '🔄 Switch tasks',
-              ].map((f) => (
-                <span
-                  key={f}
-                  className="text-xs px-3 py-1.5 rounded-full"
-                  style={{
-                    background: 'rgba(52,211,153,0.06)',
-                    border: '1px solid rgba(52,211,153,0.12)',
-                    color: 'rgba(255,255,255,0.4)',
-                  }}
-                >
-                  {f}
-                </span>
-              ))}
-            </div>
+            {/* Soft hint */}
+            <p className="text-center text-[11px] text-white/20 mt-8 font-mono tracking-wider">
+              OR JUST SPEAK TO ARIA
+            </p>
           </div>
         )}
 
-        {/* ── ACTIVE / PAUSED: dashboard ── */}
-        {isActive && (
-          <div className="px-4 py-4 max-w-7xl mx-auto">
-            <AssistLayout
-              session={session}
-              videoRef={videoRef}
-              isSpeaking={isSpeaking}
-              onFlipCamera={flipCamera}
-              onToggleCamera={toggleCamera}
-              onTakeScreenshot={takeScreenshot}
-              onDownloadScreenshot={downloadScreenshot}
-              onDismissScreenshot={handleDismissScreenshot}
-              onToggleStep={toggleStep}
-              onUpdateNotes={updateSessionNotes}
-              onExport={exportSession}
-              onQuickTask={handleQuickTask}
-            />
+        {/* ── ACTIVE / PAUSED: video + transcript + sidebar ── */}
+        {showVideo && (
+          <div className="flex gap-4 px-4 py-4 max-w-7xl mx-auto">
+
+            {/* Left: video + transcript */}
+            <div className="flex flex-col gap-4 flex-1 min-w-0">
+              <AssistVideoFeed
+                videoRef={videoRef}
+                phase={session.phase}
+                isCameraOn={session.isCameraOn}
+                cameraFacing={session.cameraFacing}
+                hasMultipleCameras={session.hasMultipleCameras}
+                isSpeaking={isSpeaking}
+                taskTitle={session.taskTitle}
+                screenshotDataUrl={session.screenshotDataUrl}
+                onFlipCamera={flipCamera}
+                onToggleCamera={toggleCamera}
+                onTakeScreenshot={takeScreenshot}
+                onDownloadScreenshot={downloadScreenshot}
+                onDismissScreenshot={handleDismissScreenshot}
+              />
+              <AssistTranscript
+                entries={session.transcript}
+                isSpeaking={isSpeaking}
+              />
+            </div>
+
+            {/* Right: sidebar (lg+) */}
+            <div className="w-72 shrink-0 hidden lg:flex flex-col" style={{ minHeight: '500px' }}>
+              <AssistSidebar
+                steps={session.steps}
+                timeline={session.timeline}
+                sessionNotes={session.sessionNotes}
+                sessionDuration={session.sessionDuration}
+                taskTitle={session.taskTitle}
+                onToggleStep={toggleStep}
+                onUpdateNotes={updateSessionNotes}
+                onExport={exportSession}
+              />
+            </div>
           </div>
         )}
       </div>

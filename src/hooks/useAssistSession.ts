@@ -15,8 +15,9 @@ import { useMediaCapture } from '@/hooks/useMediaCapture';
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export type AssistSessionPhase =
-  | 'idle'        // no session yet
-  | 'active'      // session running
+  | 'idle'        // page just loaded, session not started
+  | 'listening'   // ARIA session active, mic on, awaiting task selection
+  | 'active'      // task selected — video feed showing, ARIA helping
   | 'paused'      // manually paused
   | 'ended';      // session finished
 
@@ -197,7 +198,7 @@ export function useAssistSession() {
 
   // ── Session timer ─────────────────────────────────────────────────────────
   useEffect(() => {
-    if (phase === 'active') {
+    if (phase === 'active' || phase === 'listening') {
       timerRef.current = setInterval(() => {
         setSessionDuration((d) => d + 1);
       }, 1000);
@@ -267,6 +268,30 @@ export function useAssistSession() {
     addTimelineEvent('Session ended', 'info');
     if (timerRef.current) clearInterval(timerRef.current);
   }, [aria, stopCapture]);
+
+  // selectTask — called when user clicks a shortcut OR ARIA detects a task from voice.
+  // Transitions from 'listening' to 'active': starts video and sets the task title.
+  const selectTask = useCallback(async (query: string, label: string) => {
+    setTaskTitle(label);
+    addTimelineEvent(`Task selected: "${label}"`, 'info');
+
+    // Send task to backend so ARIA starts helping immediately
+    aria.sendText(JSON.stringify({
+      type: 'control',
+      action: 'start_assist',
+      initial_query: query,
+    }));
+
+    // Start video capture now that a task is active
+    try {
+      await startCapture();
+    } catch (err) {
+      console.error('[ASSIST] Camera start error:', err);
+    }
+
+    setPhase('active');
+    setSessionDuration(0);
+  }, [aria, startCapture]);
 
   const toggleMute = useCallback(() => {
     if (isMuted) {
@@ -368,11 +393,9 @@ export function useAssistSession() {
   }, [transcript, steps, timeline, sessionNotes, taskTitle, sessionDuration]);
 
   const sendQuickTask = useCallback((task: string) => {
-    setTaskTitle(task);
-    if (phase === 'idle' || phase === 'ended') {
-      startSession(task);
-    } else {
-      // Send to active session
+    // If already active, just update the task title and notify ARIA
+    if (phase === 'active' || phase === 'paused') {
+      setTaskTitle(task);
       aria.sendText(JSON.stringify({
         type: 'control',
         action: 'update_context',
@@ -380,7 +403,8 @@ export function useAssistSession() {
       }));
       addTimelineEvent(`Task switched: "${task}"`, 'info');
     }
-  }, [phase, startSession, aria]); // eslint-disable-line
+    // Otherwise handled by selectTask
+  }, [phase, aria]); // eslint-disable-line
 
   return {
     // State
@@ -413,6 +437,7 @@ export function useAssistSession() {
     pauseSession,
     resumeSession,
     endSession,
+    selectTask,
     toggleMute,
     toggleCamera,
     flipCamera,
