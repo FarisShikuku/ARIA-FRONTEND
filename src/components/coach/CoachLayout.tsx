@@ -1,3 +1,4 @@
+
 'use client';
 
 /**
@@ -47,6 +48,7 @@ interface CoachLayoutProps {
   onToggleCamera: () => void;
   onToggleMute: () => void;
   onChangeMode: () => void;
+  onFlipCamera: (facing: 'user' | 'environment') => void;  // NEW
 }
 
 export const CoachLayout: React.FC<CoachLayoutProps> = ({
@@ -68,6 +70,7 @@ export const CoachLayout: React.FC<CoachLayoutProps> = ({
   onToggleCamera,
   onToggleMute,
   onChangeMode,
+  onFlipCamera,
 }) => {
   const isActive = phase === 'active';
   const isPaused = phase === 'paused';
@@ -128,6 +131,7 @@ export const CoachLayout: React.FC<CoachLayoutProps> = ({
           onPause={onPause}
           onResume={onResume}
           onEnd={onEnd}
+          onFlipCamera={onFlipCamera}
         />
         <CoachSidebar
           agentState={agentState}

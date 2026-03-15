@@ -1,17 +1,26 @@
 /**
- * VideoFeed.tsx — UPDATED
+ * VideoFeed.tsx
  *
- * WHAT CHANGED:
- * Previously showed a static silhouette SVG with no real camera.
- * Now:
- * - Attaches the real videoRef from useMediaCapture to a <video> element
- * - Shows the actual live camera feed when isCameraOn === true
- * - Falls back to the silhouette when camera is off (preserves old design)
- * - CoachingOverlay still renders on top (posture guide, hint cards, controls)
- * - VideoControls now receive real callbacks from the session hook
+ * CHANGES vs previous version:
+ *
+ * 1. FRONT CAMERA IS DEFAULT ON MOBILE
+ *    WHY: Coach page needs the user facing the camera. Previously hardcoded
+ *    facingMode='environment' in useMediaCapture showed the rear camera.
+ *    useMediaCapture now defaults to 'user' (front) — this file just receives
+ *    the live videoRef and renders it.
+ *
+ * 2. FLIP CAMERA BUTTON ADDED
+ *    WHY: User may want to show their environment (rear) or switch back to
+ *    front. The flip button toggles facingMode between 'user' and 'environment'
+ *    which triggers useMediaCapture to restart the stream with the new camera.
+ *    onFlipCamera prop passed up to useCoachSession → useMediaCapture.
+ *
+ * 3. video element no longer mirrors on rear camera
+ *    WHY: scaleX(-1) mirror looks correct for front camera (selfie view) but
+ *    wrong for rear camera (flips real world). Mirror only applies when facing='user'.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { CoachingOverlay } from './CoachingOverlay';
 import type { CoachMetrics, CoachSessionPhase } from '@/lib/types/coach.types';
 
@@ -28,6 +37,7 @@ interface VideoFeedProps {
   onPause: () => void;
   onResume: () => void;
   onEnd: () => void;
+  onFlipCamera?: (facing: 'user' | 'environment') => void;  // NEW
 }
 
 export const VideoFeed: React.FC<VideoFeedProps> = ({
@@ -43,8 +53,19 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
   onPause,
   onResume,
   onEnd,
+  onFlipCamera,
 }) => {
   const isPaused = phase === 'paused';
+
+  // FIX: track which camera is active so we can show flip button and
+  // apply mirror transform only on front camera
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+
+  const handleFlip = () => {
+    const next = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(next);
+    onFlipCamera?.(next);
+  };
 
   return (
     <div className="relative rounded-2xl overflow-hidden aspect-video bg-black glow-box-amber border border-amber/20">
@@ -55,28 +76,24 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
           ref={videoRef}
           autoPlay
           playsInline
-          muted   /* always mute the video element — audio goes via Gemini Live */
+          muted
           className="absolute inset-0 w-full h-full object-cover"
-          style={{ transform: 'scaleX(-1)' }}  /* mirror for front-facing feel */
+          // Mirror only on front camera — rear camera should not be mirrored
+          style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
         />
       )}
 
-      {/* ── Fallback: simulated feed (camera off or not started) ─────────── */}
+      {/* ── Fallback: camera off ──────────────────────────────────────────── */}
       {!isCameraOn && (
         <div className="absolute inset-0 bg-gradient-to-br from-[#0a1520] to-[#050d14] flex items-center justify-center">
           <div className="relative flex flex-col items-center opacity-60">
-            {/* Person Silhouette */}
             <div className="w-15 h-15 rounded-full bg-cyan-ghost border border-cyan/20 mb-1" />
             <div className="w-20 h-25 bg-cyan-ghost/50 border border-cyan/10 rounded-t-[40px] rounded-b-2xl" />
           </div>
-
-          {/* Gaze tracking ring (simulated) */}
-          <div className="absolute top-[25%] left-[42%] w-4 h-4">
+          <div className="absolute top-1/2 left-[42%] w-4 h-4">
             <div className="absolute inset-0 border border-cyan rounded-full animate-pulse-ring" />
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-1 bg-cyan rounded-full" />
           </div>
-
-          {/* Camera off indicator */}
           <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 bg-bg-surface/80 backdrop-blur-md border border-border rounded-full px-3 py-1">
             <span className="text-xs">📷</span>
             <span className="font-mono text-[9px] text-text-muted tracking-wider">CAMERA OFF</span>
@@ -84,12 +101,30 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
         </div>
       )}
 
-      {/* ── Dark overlay scrim on camera feed for readability ────────────── */}
+      {/* ── Dark scrim for readability ────────────────────────────────────── */}
       {isCameraOn && (
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none" />
       )}
 
-      {/* ── Coaching overlays (hints, posture bars, controls) ────────────── */}
+      {/* ── Flip camera button — top left, only when camera is on ────────── */}
+      {isCameraOn && (
+        <button
+          onClick={handleFlip}
+          title={facingMode === 'user' ? 'Switch to rear camera' : 'Switch to front camera'}
+          className="absolute top-3 left-3 z-10 flex items-center gap-1.5 bg-black/60 backdrop-blur-md border border-white/20 text-white rounded-full px-2.5 py-1 font-mono text-[10px] hover:bg-black/80 transition-colors"
+        >
+          🔄 {facingMode === 'user' ? 'Rear' : 'Front'}
+        </button>
+      )}
+
+      {/* ── Camera label — top right ─────────────────────────────────────── */}
+      {isCameraOn && (
+        <div className="absolute top-3 right-3 z-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full px-2 py-0.5 font-mono text-[9px] text-white/70">
+          {facingMode === 'user' ? '📱 FRONT' : '🌍 REAR'}
+        </div>
+      )}
+
+      {/* ── Coaching overlays ────────────────────────────────────────────── */}
       <CoachingOverlay
         metrics={metrics}
         isMicOn={isMicOn}

@@ -87,6 +87,7 @@ export default function CoachPage() {
               onToggleCamera={coach.toggleCamera}
               onToggleMute={coach.toggleMute}
               onChangeMode={() => coach.selectMode(session.mode!)}
+              onFlipCamera={coach.flipCamera}
             />
           </div>
         )}

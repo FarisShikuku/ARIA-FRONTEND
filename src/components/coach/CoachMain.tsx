@@ -1,10 +1,9 @@
 /**
- * CoachMain.tsx — UPDATED
+ * CoachMain.tsx
  *
- * WHAT CHANGED:
- * Previously had no props — passed nothing to VideoFeed or MetricsStrip.
- * Now forwards all real session props so VideoFeed shows actual camera
- * and MetricsStrip shows live metrics.
+ * CHANGES vs previous version:
+ * onFlipCamera prop added — passed down from CoachLayout → VideoFeed
+ * so the flip button in VideoFeed can switch between front/rear camera.
  */
 
 import React from 'react';
@@ -25,6 +24,7 @@ interface CoachMainProps {
   onPause: () => void;
   onResume: () => void;
   onEnd: () => void;
+  onFlipCamera: (facing: 'user' | 'environment') => void;  // NEW
 }
 
 export const CoachMain: React.FC<CoachMainProps> = ({
@@ -40,6 +40,7 @@ export const CoachMain: React.FC<CoachMainProps> = ({
   onPause,
   onResume,
   onEnd,
+  onFlipCamera,
 }) => {
   return (
     <div className="flex flex-col gap-5">
@@ -56,6 +57,7 @@ export const CoachMain: React.FC<CoachMainProps> = ({
         onPause={onPause}
         onResume={onResume}
         onEnd={onEnd}
+        onFlipCamera={onFlipCamera}
       />
       <MetricsStrip metrics={metrics} />
     </div>

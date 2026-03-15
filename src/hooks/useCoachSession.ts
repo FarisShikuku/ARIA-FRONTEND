@@ -1,20 +1,30 @@
 /**
  * useCoachSession.ts
  *
- * WHY THIS FILE EXISTS:
- * The coach page previously had no real session logic — all data was hardcoded
- * static values in each component. This hook:
- *   1. Creates a backend session (POST /api/v1/sessions/start with type='coach')
- *   2. Opens the Gemini Live WebSocket via useAriaIntro (same pattern as navigate)
- *   3. Sends a coach-mode system prompt so ARIA speaks as a coach, not navigator
- *   4. Drives agent state from WS messages (same useAgentState hook)
- *   5. Tracks real metrics from backend coach_metrics WS messages
- *   6. Accumulates timeline events from coach_hint WS messages
- *   7. Manages session timer, mic, camera, pause/mute controls
- *   8. Exposes mode switching: when user says "navigate" or clicks switch,
- *      sends a mode_switch control message and can redirect to /navigate
+ * CHANGES vs previous version:
  *
- * Pattern mirrors useAriaIntro + useNavigationSession but for coach mode.
+ * 1. startSession() NOW CALLS aria.activate('coach') NOT aria.activate()
+ *    WHY: aria.activate() with no argument sends 'start_intro' to the backend,
+ *    which creates a session with mode=None and fires the home greeting:
+ *    "Hi I am ARIA — I run on three modes: General Assistant, Navigation, Coach..."
+ *    Wrong context entirely for the coach page.
+ *    FIX: activate('coach') sends 'start_coach' — the backend closes any
+ *    existing session, creates a fresh session with mode='coach' and sends
+ *    only the coach greeting. Same fix pattern as navigation.
+ *
+ * 2. REMOVED: the start_coach_* sendText call inside startSession
+ *    WHY: Previously activate() fired start_intro, THEN sendText sent
+ *    start_coach_interview on top — two prompts, two voices.
+ *    Now start_coach is the ONLY activation message. The sub-mode is
+ *    sent as a follow-up update_context after activation — not as a
+ *    second session trigger.
+ *
+ * 3. useMediaCapture NOW PASSES facingMode='user' (front camera)
+ *    WHY: Previously hardcoded facingMode='environment' (rear camera).
+ *    Coach page needs the front camera — user faces it for coaching.
+ *    Navigation passes 'environment' explicitly.
+ *
+ * Everything else is identical.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
@@ -106,6 +116,7 @@ export interface UseCoachSessionReturn {
   toggleMute: () => void;
   toggleCamera: () => void;
   toggleMic: () => void;
+  flipCamera: (facing: 'user' | 'environment') => void;  // NEW
   switchToNavigation: () => void;
 }
 
@@ -130,8 +141,11 @@ export function useCoachSession(): UseCoachSessionReturn {
   const aria = useAriaIntro();
 
   // ── Agent state driven by WS messages ────────────────────────────────────
-  // subscribeToMessages is callback-based — state is managed via lastWsMessage below.
   const [lastWsMessage, setLastWsMessage] = useState<any>(null);
+
+  // ── Camera facing mode state ──────────────────────────────────────────────
+  // Default 'user' (front camera). User can flip via the button in VideoFeed.
+  const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
 
   useEffect(() => {
     if (!aria.subscribeToMessages) return;
@@ -148,10 +162,11 @@ export function useCoachSession(): UseCoachSessionReturn {
     isSpeaking: aria.isSpeaking,
   });
 
-  // ── Media capture ─────────────────────────────────────────────────────────
+  // ── Media capture — front camera for coach (user faces it) ──────────────
   const { videoRef, isCapturing, startCapture, stopCapture } = useMediaCapture({
     sendFrame: aria.sendBinary,
     enabled: session.isCameraOn && session.phase === 'active',
+    facingMode,  // dynamic — changes when user taps flip button
   });
 
   // ── Handle WS messages from backend ──────────────────────────────────────
@@ -220,21 +235,30 @@ export function useCoachSession(): UseCoachSessionReturn {
   const startSession = useCallback(async () => {
     if (!session.mode) return;
 
-    // Activate Gemini Live if not already active
+    // FIX: activate('coach') not activate()
+    // activate() → 'start_intro' → home greeting fires on coach page
+    // activate('coach') → 'start_coach' → backend creates fresh coach session,
+    // sends only the coach greeting, no home context bleeds in
     if (aria.introState !== 'active') {
-      await aria.activate();
+      await aria.activate('coach');
     }
 
-    // Tell backend we're starting coach mode with this specific sub-mode
+    // Send sub-mode as a follow-up context update — NOT as a second activation.
+    // WHY: Previously sent start_coach_interview as a separate control message
+    // which the backend treated as a second session trigger. That caused two
+    // voices and double context. Now it's just a context shift on the existing
+    // coach session — ARIA adjusts her persona for the specific coaching type.
     aria.sendText(JSON.stringify({
       type: 'control',
-      action: MODE_INTROS[session.mode],
-      mode: 'coach',
-      coach_mode: session.mode,
-      system_prompt_hint: COACH_SYSTEM_PROMPTS[session.mode],
+      action: 'update_context',
+      context: {
+        page_focus: 'coach',
+        instruction: `You are now in ${session.mode} coaching mode. ` +
+          COACH_SYSTEM_PROMPTS[session.mode],
+      },
     }));
 
-    // Start camera
+    // Start front camera
     await startCapture();
 
     setSession(prev => ({
@@ -297,11 +321,16 @@ export function useCoachSession(): UseCoachSessionReturn {
       action: 'mode_switch',
       target_mode: 'navigation',
     }));
-    // Navigate — use window.location since we don't have router here
     if (typeof window !== 'undefined') {
       window.location.href = '/navigate?autostart=true';
     }
   }, [aria]);
+
+  // FIX: flipCamera — updates facingMode state which triggers useMediaCapture
+  // to restart the stream with the new camera via the facingMode useEffect
+  const flipCamera = useCallback((facing: 'user' | 'environment') => {
+    setFacingMode(facing);
+  }, []);
 
   return {
     session,
@@ -320,6 +349,7 @@ export function useCoachSession(): UseCoachSessionReturn {
     toggleMute,
     toggleCamera,
     toggleMic,
+    flipCamera,
     switchToNavigation,
   };
 }

@@ -1,41 +1,38 @@
 /**
- * useMediaCapture.ts — REWRITTEN (sendFrame callback replaces wsRef)
+ * useMediaCapture.ts
  *
- * WHAT CHANGED AND WHY:
+ * CHANGES vs previous version:
  *
- * Previously accepted `wsRef: React.MutableRefObject<WebSocket | null>`.
- * useNavigationSession passed `aria.wsRef ?? useRef(null)` — but if wsRef
- * wasn't exported from useAriaIntro, the fallback was always null, so
- * captureFrame() returned on `ws.readyState !== WebSocket.OPEN` every time.
- * Result: 0 frames sent.
+ * 1. facingMode PROP ADDED — defaults to 'user' (front camera)
+ *    WHY: Previously hardcoded facingMode: 'environment' (rear camera) inside
+ *    getUserMedia. Coach page needs the front camera (user faces it for coaching).
+ *    Navigation needs the rear camera (points at the world for obstacle detection).
+ *    Now the caller controls which camera is used via the facingMode prop.
+ *    - Coach:      facingMode='user'        (default — front camera)
+ *    - Navigation: facingMode='environment' (rear camera)
  *
- * New approach: accept `sendFrame: (data: ArrayBuffer) => void` callback.
- * useNavigationSession builds this callback using aria.sendBinary (which
- * comes straight from useGeminiLive's wsRef — always the real open socket).
- * No ref sharing, no null risk, no conditional hook call.
+ * 2. facingMode CHANGE TRIGGERS STREAM RESTART
+ *    WHY: Browser MediaStream constraints cannot be changed on a live stream.
+ *    The only way to switch cameras is to stop the current stream and call
+ *    getUserMedia again with the new facingMode. When facingMode changes and
+ *    the stream is active, stopCapture() + startCapture() is called automatically.
+ *    This is what makes the flip button in VideoFeed work.
  *
- * Everything else is identical: 1 FPS, JPEG encoding, binary frame format.
+ * Everything else is identical to the previous version.
  */
 
 import { useRef, useState, useCallback, useEffect } from 'react'
 
-// ── Types ─────────────────────────────────────────────────────────────────────
-
 interface UseMediaCaptureOptions {
-  /** Called with a fully-built binary frame ready to send over WebSocket */
   sendFrame: (data: ArrayBuffer) => void
-  /** Only capture when true */
   enabled?: boolean
-  /** Frames per second — capped at 1 (Gemini Live max) */
   fps?: number
-  /** JPEG quality 0–1 */
   quality?: number
-  /** Max canvas dimension — Gemini optimal is 768 */
   maxDimension?: number
+  facingMode?: 'user' | 'environment'  // NEW — default 'user' (front camera)
 }
 
 export interface UseMediaCaptureReturn {
-  /** Attach to <video> element to show camera preview */
   videoRef: React.RefObject<HTMLVideoElement | null>
   isCapturing: boolean
   startCapture: () => Promise<void>
@@ -62,19 +59,34 @@ export function useMediaCapture({
   fps = 1,
   quality = 0.7,
   maxDimension = 768,
+  facingMode = 'user',  // NEW — default front camera for coach; navigation passes 'environment'
 }: UseMediaCaptureOptions): UseMediaCaptureReturn {
 
   const [isCapturing, setIsCapturing] = useState(false)
   const [error, setError]             = useState<string | null>(null)
 
-  const videoRef     = useRef<HTMLVideoElement | null>(null)
-  const streamRef    = useRef<MediaStream | null>(null)
-  const canvasRef    = useRef<HTMLCanvasElement | null>(null)
-  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null)
+  const videoRef      = useRef<HTMLVideoElement | null>(null)
+  const streamRef     = useRef<MediaStream | null>(null)
+  const canvasRef     = useRef<HTMLCanvasElement | null>(null)
+  const intervalRef   = useRef<ReturnType<typeof setInterval> | null>(null)
   const frameCountRef = useRef(0)
-  // Keep sendFrame in a ref so the interval callback always has the latest version
+  const facingModeRef = useRef(facingMode)  // track current facing mode
+
   const sendFrameRef = useRef(sendFrame)
   useEffect(() => { sendFrameRef.current = sendFrame }, [sendFrame])
+
+  // When facingMode prop changes while capturing → restart stream with new camera
+  // WHY: getUserMedia constraints can't be updated on a live stream — must restart
+  useEffect(() => {
+    if (facingModeRef.current !== facingMode && isCapturing) {
+      facingModeRef.current = facingMode
+      // Stop current stream, restart with new facingMode
+      stopCapture()
+      startCapture()
+    } else {
+      facingModeRef.current = facingMode
+    }
+  }, [facingMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Frame capture ─────────────────────────────────────────────────────────
 
@@ -139,9 +151,11 @@ export function useMediaCapture({
     console.log('[VIDEO-CAPTURE] 🎥 Requesting camera access…')
 
     try {
+      // FIX: use facingModeRef.current not hardcoded 'environment'
+      // Coach uses 'user' (front), Navigation uses 'environment' (rear)
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: 'environment',
+          facingMode: facingModeRef.current,
           width:  { ideal: 1280, max: 1920 },
           height: { ideal: 720,  max: 1080 },
         },

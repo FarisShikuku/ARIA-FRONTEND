@@ -154,9 +154,12 @@ export function useAriaIntro(): UseAriaIntroReturn {
 
     // FIX: route to the correct backend action based on mode.
     // 'navigation' → start_navigation (creates fresh nav session, nav greeting only)
+    // 'coach'      → start_coach      (creates fresh coach session, coach greeting only)
     // undefined    → start_intro      (home page, existing behaviour unchanged)
     if (mode === 'navigation') {
       sendControlMessage('start_navigation', { mode: 'navigation' });
+    } else if (mode === 'coach') {
+      sendControlMessage('start_coach', { mode: 'coach' });
     } else {
       sendControlMessage('start_intro');
     }
