@@ -1,23 +1,26 @@
 /**
- * VideoFeed.tsx
+ * VideoFeed.tsx — Coach
  *
  * CHANGES vs previous version:
  *
- * 1. FRONT CAMERA IS DEFAULT ON MOBILE
- *    WHY: Coach page needs the user facing the camera. Previously hardcoded
- *    facingMode='environment' in useMediaCapture showed the rear camera.
- *    useMediaCapture now defaults to 'user' (front) — this file just receives
- *    the live videoRef and renders it.
+ * 1. DEFAULT IS FRONT CAMERA (user)
+ *    Coach page needs the user facing the camera for performance coaching.
+ *    facingMode state defaults to 'user'. This matches useMediaCapture which
+ *    also defaults to 'user'.
  *
- * 2. FLIP CAMERA BUTTON ADDED
- *    WHY: User may want to show their environment (rear) or switch back to
- *    front. The flip button toggles facingMode between 'user' and 'environment'
- *    which triggers useMediaCapture to restart the stream with the new camera.
- *    onFlipCamera prop passed up to useCoachSession → useMediaCapture.
+ * 2. FLIP BUTTON — only shown when hasMultipleCameras === true
+ *    Previously the flip button was always shown. Now it is hidden on devices
+ *    that only have one camera (laptops, basic phones). The hasMultipleCameras
+ *    prop comes from useMediaCapture which probes navigator.mediaDevices after
+ *    permission is granted.
  *
- * 3. video element no longer mirrors on rear camera
- *    WHY: scaleX(-1) mirror looks correct for front camera (selfie view) but
- *    wrong for rear camera (flips real world). Mirror only applies when facing='user'.
+ * 3. video element mirrors only on front camera
+ *    scaleX(-1) applies when facingMode === 'user' (selfie / front camera).
+ *    Rear camera shows the real world — mirroring it would look wrong.
+ *
+ * 4. onFlipCamera prop is optional
+ *    Pages that don't wire up camera flipping simply don't pass the prop and
+ *    the button will not render regardless of hasMultipleCameras.
  */
 
 import React, { useState } from 'react';
@@ -25,19 +28,22 @@ import { CoachingOverlay } from './CoachingOverlay';
 import type { CoachMetrics, CoachSessionPhase } from '@/lib/types/coach.types';
 
 interface VideoFeedProps {
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  isCameraOn: boolean;
-  metrics: CoachMetrics;
-  isMicOn: boolean;
-  isMuted: boolean;
-  phase: CoachSessionPhase;
-  onToggleMic: () => void;
+  videoRef:      React.RefObject<HTMLVideoElement | null>;
+  isCameraOn:    boolean;
+  metrics:       CoachMetrics;
+  isMicOn:       boolean;
+  isMuted:       boolean;
+  phase:         CoachSessionPhase;
+  onToggleMic:   () => void;
   onToggleCamera: () => void;
-  onToggleMute: () => void;
-  onPause: () => void;
-  onResume: () => void;
-  onEnd: () => void;
-  onFlipCamera?: (facing: 'user' | 'environment') => void;  // NEW
+  onToggleMute:  () => void;
+  onPause:       () => void;
+  onResume:      () => void;
+  onEnd:         () => void;
+  /** Called when user flips the camera — parent updates facingMode on useMediaCapture */
+  onFlipCamera?: (facing: 'user' | 'environment') => void;
+  /** Whether the device has > 1 camera — controls flip button visibility */
+  hasMultipleCameras?: boolean;
 }
 
 export const VideoFeed: React.FC<VideoFeedProps> = ({
@@ -54,11 +60,12 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
   onResume,
   onEnd,
   onFlipCamera,
+  hasMultipleCameras = false,
 }) => {
   const isPaused = phase === 'paused';
 
-  // FIX: track which camera is active so we can show flip button and
-  // apply mirror transform only on front camera
+  // Track active facing mode locally so badge and mirror stay in sync.
+  // Coach defaults to front camera ('user').
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
 
   const handleFlip = () => {
@@ -78,12 +85,12 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
           playsInline
           muted
           className="absolute inset-0 w-full h-full object-cover"
-          // Mirror only on front camera — rear camera should not be mirrored
+          // Mirror selfie view (front camera) — do NOT mirror rear camera
           style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
         />
       )}
 
-      {/* ── Fallback: camera off ──────────────────────────────────────────── */}
+      {/* ── Camera off placeholder ────────────────────────────────────────── */}
       {!isCameraOn && (
         <div className="absolute inset-0 bg-gradient-to-br from-[#0a1520] to-[#050d14] flex items-center justify-center">
           <div className="relative flex flex-col items-center opacity-60">
@@ -101,13 +108,13 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
         </div>
       )}
 
-      {/* ── Dark scrim for readability ────────────────────────────────────── */}
+      {/* ── Dark scrim for overlay readability ───────────────────────────── */}
       {isCameraOn && (
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none" />
       )}
 
-      {/* ── Flip camera button — top left, only when camera is on ────────── */}
-      {isCameraOn && (
+      {/* ── Flip camera button — top-left, only on multi-camera devices ─── */}
+      {isCameraOn && hasMultipleCameras && onFlipCamera && (
         <button
           onClick={handleFlip}
           title={facingMode === 'user' ? 'Switch to rear camera' : 'Switch to front camera'}
@@ -117,14 +124,14 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
         </button>
       )}
 
-      {/* ── Camera label — top right ─────────────────────────────────────── */}
+      {/* ── Camera facing badge — top-right ──────────────────────────────── */}
       {isCameraOn && (
         <div className="absolute top-3 right-3 z-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full px-2 py-0.5 font-mono text-[9px] text-white/70">
-          {facingMode === 'user' ? '📱 FRONT' : '🌍 REAR'}
+          {facingMode === 'user' ? '↪ FRONT' : '↩ REAR'}
         </div>
       )}
 
-      {/* ── Coaching overlays ────────────────────────────────────────────── */}
+      {/* ── Coaching overlays ─────────────────────────────────────────────── */}
       <CoachingOverlay
         metrics={metrics}
         isMicOn={isMicOn}
@@ -138,7 +145,7 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
         onEnd={onEnd}
       />
 
-      {/* ── Paused overlay ───────────────────────────────────────────────── */}
+      {/* ── Paused overlay ────────────────────────────────────────────────── */}
       {isPaused && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="flex flex-col items-center gap-2">

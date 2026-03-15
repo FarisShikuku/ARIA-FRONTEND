@@ -1,43 +1,53 @@
 /**
  * useMediaCapture.ts
  *
- * CHANGES vs previous version:
+ * CAMERA DEFAULTS:
+ *   - Coach:      facingMode='user'        → front camera (user faces it)
+ *   - Navigation: facingMode='environment' → rear camera (points at world)
+ *   - Assist:     facingMode='environment' → rear camera (points at task)
  *
- * 1. facingMode PROP ADDED — defaults to 'user' (front camera)
- *    WHY: Previously hardcoded facingMode: 'environment' (rear camera) inside
- *    getUserMedia. Coach page needs the front camera (user faces it for coaching).
- *    Navigation needs the rear camera (points at the world for obstacle detection).
- *    Now the caller controls which camera is used via the facingMode prop.
- *    - Coach:      facingMode='user'        (default — front camera)
- *    - Navigation: facingMode='environment' (rear camera)
+ * SINGLE-CAMERA / NO REAR CAMERA FALLBACK:
+ *   If getUserMedia fails with the requested facingMode (e.g. a laptop with
+ *   only a front camera asked for 'environment'), we retry WITHOUT the
+ *   facingMode constraint so the device's only available camera is used.
+ *   This prevents a hard error on desktop browsers and single-camera phones.
  *
- * 2. facingMode CHANGE TRIGGERS STREAM RESTART
- *    WHY: Browser MediaStream constraints cannot be changed on a live stream.
- *    The only way to switch cameras is to stop the current stream and call
- *    getUserMedia again with the new facingMode. When facingMode changes and
- *    the stream is active, stopCapture() + startCapture() is called automatically.
- *    This is what makes the flip button in VideoFeed work.
+ *   We use { ideal: facingMode } (soft constraint) as the first attempt so
+ *   browsers with both cameras pick the right one, but browsers with only one
+ *   camera still succeed rather than throwing OverconstrainedError.
  *
- * Everything else is identical to the previous version.
+ * CAMERA SWITCHING:
+ *   Browser MediaStream constraints cannot be updated on a live stream.
+ *   To switch cameras we must stop the current stream and call getUserMedia
+ *   again with the new facingMode. The effect that watches facingMode uses
+ *   refs so it always has fresh references to startCapture / stopCapture,
+ *   avoiding the stale-closure bug present in the previous version.
+ *
+ * NEW EXPORT:
+ *   hasMultipleCameras — true when the device reports > 1 video input.
+ *   Components use this to conditionally show the flip-camera button.
  */
 
 import { useRef, useState, useCallback, useEffect } from 'react'
 
 interface UseMediaCaptureOptions {
-  sendFrame: (data: ArrayBuffer) => void
-  enabled?: boolean
-  fps?: number
-  quality?: number
+  sendFrame:     (data: ArrayBuffer) => void
+  enabled?:      boolean
+  fps?:          number
+  quality?:      number
   maxDimension?: number
-  facingMode?: 'user' | 'environment'  // NEW — default 'user' (front camera)
+  /** Which camera to open. Default: 'user' (front). Pass 'environment' for rear. */
+  facingMode?:   'user' | 'environment'
 }
 
 export interface UseMediaCaptureReturn {
-  videoRef: React.RefObject<HTMLVideoElement | null>
-  isCapturing: boolean
-  startCapture: () => Promise<void>
-  stopCapture: () => void
-  error: string | null
+  videoRef:           React.RefObject<HTMLVideoElement | null>
+  isCapturing:        boolean
+  startCapture:       () => Promise<void>
+  stopCapture:        () => void
+  error:              string | null
+  /** true when the device exposes more than one camera input (show flip button) */
+  hasMultipleCameras: boolean
 }
 
 // ── Binary frame builder ──────────────────────────────────────────────────────
@@ -51,67 +61,66 @@ function buildVideoFrame(jpegBuffer: ArrayBuffer): ArrayBuffer {
   return frame.buffer
 }
 
+// ── Detect number of video input devices ─────────────────────────────────────
+// Note: labels/deviceIds are only populated AFTER the user grants camera
+// permission, so we call this after the first successful getUserMedia.
+
+async function detectCameraCount(): Promise<number> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    return devices.filter(d => d.kind === 'videoinput').length
+  } catch {
+    return 1 // safe assumption: single camera if enumeration fails
+  }
+}
+
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useMediaCapture({
   sendFrame,
-  enabled = true,
-  fps = 1,
-  quality = 0.7,
+  enabled      = true,
+  fps          = 1,
+  quality      = 0.7,
   maxDimension = 768,
-  facingMode = 'user',  // NEW — default front camera for coach; navigation passes 'environment'
+  facingMode   = 'user',
 }: UseMediaCaptureOptions): UseMediaCaptureReturn {
 
-  const [isCapturing, setIsCapturing] = useState(false)
-  const [error, setError]             = useState<string | null>(null)
+  const [isCapturing,        setIsCapturing]        = useState(false)
+  const [error,              setError]              = useState<string | null>(null)
+  const [hasMultipleCameras, setHasMultipleCameras] = useState(false)
 
-  const videoRef      = useRef<HTMLVideoElement | null>(null)
-  const streamRef     = useRef<MediaStream | null>(null)
-  const canvasRef     = useRef<HTMLCanvasElement | null>(null)
-  const intervalRef   = useRef<ReturnType<typeof setInterval> | null>(null)
+  const videoRef     = useRef<HTMLVideoElement | null>(null)
+  const streamRef    = useRef<MediaStream | null>(null)
+  const canvasRef    = useRef<HTMLCanvasElement | null>(null)
+  const intervalRef  = useRef<ReturnType<typeof setInterval> | null>(null)
   const frameCountRef = useRef(0)
-  const facingModeRef = useRef(facingMode)  // track current facing mode
 
-  const sendFrameRef = useRef(sendFrame)
+  // Refs so effects and callbacks always read the latest values without
+  // needing them in dependency arrays (avoids stale-closure bugs).
+  const facingModeRef  = useRef(facingMode)
+  const isCapturingRef = useRef(false)
+  const sendFrameRef   = useRef(sendFrame)
+
   useEffect(() => { sendFrameRef.current = sendFrame }, [sendFrame])
 
-  // When facingMode prop changes while capturing → restart stream with new camera
-  // WHY: getUserMedia constraints can't be updated on a live stream — must restart
-  useEffect(() => {
-    if (facingModeRef.current !== facingMode && isCapturing) {
-      facingModeRef.current = facingMode
-      // Stop current stream, restart with new facingMode
-      stopCapture()
-      startCapture()
-    } else {
-      facingModeRef.current = facingMode
-    }
-  }, [facingMode]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Sync isCapturing state into a ref so startCapture can read it safely
+  useEffect(() => { isCapturingRef.current = isCapturing }, [isCapturing])
 
   // ── Frame capture ─────────────────────────────────────────────────────────
 
   const captureFrame = useCallback(() => {
     const video  = videoRef.current
     const canvas = canvasRef.current
-    if (!video || !canvas) {
-      console.debug('[VIDEO-CAPTURE] captureFrame: video or canvas not ready')
-      return
-    }
-    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-      console.debug(`[VIDEO-CAPTURE] captureFrame: video not ready (readyState=${video.readyState})`)
-      return
-    }
+    if (!video || !canvas) return
+    if (video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return
 
     const vw = video.videoWidth
     const vh = video.videoHeight
-    if (!vw || !vh) {
-      console.debug('[VIDEO-CAPTURE] captureFrame: video dimensions not available yet')
-      return
-    }
+    if (!vw || !vh) return
 
-    const scale    = Math.min(maxDimension / vw, maxDimension / vh, 1.0)
-    canvas.width   = Math.round(vw * scale)
-    canvas.height  = Math.round(vh * scale)
+    const scale   = Math.min(maxDimension / vw, maxDimension / vh, 1.0)
+    canvas.width  = Math.round(vw * scale)
+    canvas.height = Math.round(vh * scale)
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
@@ -138,60 +147,7 @@ export function useMediaCapture({
     }, 'image/jpeg', quality)
   }, [quality, maxDimension])
 
-  // ── Start / stop ──────────────────────────────────────────────────────────
-
-  const startCapture = useCallback(async () => {
-    if (isCapturing) return
-    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      setError('Camera not supported in this environment')
-      return
-    }
-
-    setError(null)
-    console.log('[VIDEO-CAPTURE] 🎥 Requesting camera access…')
-
-    try {
-      // FIX: use facingModeRef.current not hardcoded 'environment'
-      // Coach uses 'user' (front), Navigation uses 'environment' (rear)
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: facingModeRef.current,
-          width:  { ideal: 1280, max: 1920 },
-          height: { ideal: 720,  max: 1080 },
-        },
-        audio: false,
-      })
-
-      streamRef.current = stream
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        try {
-          await videoRef.current.play()
-          console.log('[VIDEO-CAPTURE] ▶️ Video element playing')
-        } catch {
-          // play() rejection is non-fatal — autoPlay handles it on most browsers
-        }
-      } else {
-        console.warn('[VIDEO-CAPTURE] ⚠️ videoRef.current is null — video element not mounted yet')
-      }
-
-      canvasRef.current   = document.createElement('canvas')
-      frameCountRef.current = 0
-
-      // Enforce minimum 1s interval (1 FPS — Gemini Live hard cap)
-      const intervalMs = Math.max(Math.round(1000 / fps), 1000)
-      intervalRef.current = setInterval(captureFrame, intervalMs)
-
-      setIsCapturing(true)
-      console.log(`[VIDEO-CAPTURE] ✅ Started — interval=${intervalMs}ms, quality=${quality}, maxDim=${maxDimension}`)
-
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Camera access failed'
-      console.error('[VIDEO-CAPTURE] ❌ getUserMedia failed:', msg)
-      setError(msg)
-    }
-  }, [isCapturing, fps, quality, maxDimension, captureFrame])
+  // ── Stop ──────────────────────────────────────────────────────────────────
 
   const stopCapture = useCallback(() => {
     if (intervalRef.current) {
@@ -205,9 +161,109 @@ export function useMediaCapture({
       videoRef.current.srcObject = null
     }
 
+    isCapturingRef.current = false
     console.log(`[VIDEO-CAPTURE] ⏹️ Stopped — sent ${frameCountRef.current} frames total`)
     setIsCapturing(false)
   }, [])
+
+  // ── Start ─────────────────────────────────────────────────────────────────
+
+  const startCapture = useCallback(async () => {
+    if (isCapturingRef.current) return
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      setError('Camera not supported in this environment')
+      return
+    }
+
+    setError(null)
+    const targetFacing = facingModeRef.current
+    console.log(`[VIDEO-CAPTURE] 🎥 Requesting camera — facingMode="${targetFacing}"`)
+
+    let stream: MediaStream | null = null
+
+    // Strategy: use { ideal: targetFacing } as a SOFT constraint first.
+    // Devices with the requested camera will use it; single-camera devices
+    // (laptops, basic phones) fall through to whatever camera they have
+    // without throwing OverconstrainedError.
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: targetFacing },
+          width:      { ideal: 1280, max: 1920 },
+          height:     { ideal: 720,  max: 1080 },
+        },
+        audio: false,
+      })
+    } catch (firstErr) {
+      // Soft constraint still failed (rare — some browsers treat 'ideal' as
+      // 'exact' in certain contexts). Final fallback: no camera constraints.
+      console.warn(
+        `[VIDEO-CAPTURE] ⚠️ Camera request with facingMode="${targetFacing}" failed, ` +
+        'retrying with no facingMode constraint (single-camera fallback)…', firstErr
+      )
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width:  { ideal: 1280, max: 1920 },
+            height: { ideal: 720,  max: 1080 },
+          },
+          audio: false,
+        })
+        console.log('[VIDEO-CAPTURE] ✅ Fallback camera opened (no facingMode constraint)')
+      } catch (fallbackErr) {
+        const msg = fallbackErr instanceof Error ? fallbackErr.message : 'Camera access failed'
+        console.error('[VIDEO-CAPTURE] ❌ All getUserMedia attempts failed:', msg)
+        setError(msg)
+        return
+      }
+    }
+
+    streamRef.current = stream
+
+    // After permission is granted we can enumerate actual device count
+    detectCameraCount().then(n => setHasMultipleCameras(n > 1))
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = stream
+      try {
+        await videoRef.current.play()
+        console.log('[VIDEO-CAPTURE] ▶️ Video element playing')
+      } catch {
+        // play() rejection is non-fatal — autoPlay handles it on most browsers
+      }
+    } else {
+      console.warn('[VIDEO-CAPTURE] ⚠️ videoRef.current is null — video element not yet mounted')
+    }
+
+    canvasRef.current     = document.createElement('canvas')
+    frameCountRef.current = 0
+
+    const intervalMs    = Math.max(Math.round(1000 / fps), 1000)
+    intervalRef.current = setInterval(captureFrame, intervalMs)
+
+    isCapturingRef.current = true
+    setIsCapturing(true)
+    console.log(
+      `[VIDEO-CAPTURE] ✅ Started — facing="${targetFacing}", ` +
+      `interval=${intervalMs}ms, quality=${quality}, maxDim=${maxDimension}`
+    )
+  }, [fps, quality, maxDimension, captureFrame])
+  // NOTE: isCapturing intentionally not in deps — we read from isCapturingRef
+
+  // ── React to facingMode prop changes (camera flip) ────────────────────────
+
+  useEffect(() => {
+    const prev = facingModeRef.current
+    facingModeRef.current = facingMode
+
+    if (prev !== facingMode && isCapturingRef.current) {
+      console.log(`[VIDEO-CAPTURE] 🔄 facingMode changed ${prev} → ${facingMode}, restarting stream`)
+      stopCapture()
+      // Small delay so stopCapture's state update settles before startCapture
+      // reads isCapturingRef.current (which stopCapture sets to false synchronously)
+      setTimeout(() => { startCapture() }, 80)
+    }
+  }, [facingMode, stopCapture, startCapture])
 
   // ── Auto-stop when disabled ───────────────────────────────────────────────
   useEffect(() => {
@@ -219,5 +275,5 @@ export function useMediaCapture({
     return () => { stopCapture() }
   }, [stopCapture])
 
-  return { videoRef, isCapturing, startCapture, stopCapture, error }
+  return { videoRef, isCapturing, startCapture, stopCapture, error, hasMultipleCameras }
 }

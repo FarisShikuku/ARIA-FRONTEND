@@ -5,23 +5,21 @@
  *
  * CHANGES vs previous version:
  *
- * 1. GOOGLE MAPS REPLACES IFRAME
- *    WHY: The iframe was static — it pinned one location and never updated.
- *    Google Maps embed API also blocks without proper referrer config.
- *    Now uses GoogleMap component with live blue dot, route polyline,
- *    destination marker. Updates on every GPS fix.
+ * 1. CAMERA FLIP PROPS WIRED THROUGH
+ *    CameraFeed now receives three new props:
+ *      - cameraFacing:       current facing mode ('environment' | 'user')
+ *      - hasMultipleCameras: whether to show the flip button at all
+ *      - onFlipCamera:       callback to toggle facing mode in the parent page
+ *    The flip button inside CameraFeed is only rendered when hasMultipleCameras
+ *    is true, so laptops and single-camera phones are never shown a useless button.
  *
- * 2. DESTINATION SEARCH ADDED TO LEFT PANEL
- *    WHY: User needs to enter a destination to get routing. DestinationSearch
- *    includes Places Autocomplete, transport mode selector, and route summary.
+ * 2. NEW PROPS ADDED TO NavigationHUDProps
+ *    - cameraFacing:        'environment' | 'user'   (default 'environment')
+ *    - hasMultipleCameras:  boolean
+ *    - onFlipCamera:        () => void
+ *    These come from the navigation page which owns the useMediaCapture state.
  *
- * 3. ROUTESTEPS NOW RECEIVES REAL STEPS FROM GOOGLE DIRECTIONS
- *    WHY: Previously RouteSteps had hardcoded San Francisco data.
- *    Now receives live steps from useGoogleMapsRoute via useNavigationSession.
- *
- * 4. HEADER CONTROLS REMOVED — MOVED TO NavigationAgentBar
- *    WHY: Mute/End controls live in the fixed floating bar at the top.
- *    The HUD header shows only read-only status tags.
+ * Everything else (GoogleMap, DestinationSearch, RouteSteps, etc.) unchanged.
  */
 
 import React from 'react';
@@ -42,28 +40,35 @@ import type { DetectionResult } from '@/hooks/useNavigationSession';
 import type { MapsRoute, TravelMode } from '@/hooks/useGoogleMapsRoute';
 
 interface NavigationHUDProps {
-  agentState: AgentState;
-  urgencyScore: number;
-  isSpeaking: boolean;
-  isListening: boolean;
-  transcript: string;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  isCapturing: boolean;
-  detections: DetectionResult[];
-  environment: Environment;
-  gpsAccuracy: number | null;
-  position: GeolocationCoordinates | null;
-  sessionId: string | null;
+  agentState:    AgentState;
+  urgencyScore:  number;
+  isSpeaking:    boolean;
+  isListening:   boolean;
+  transcript:    string;
+  videoRef:      React.RefObject<HTMLVideoElement | null>;
+  isCapturing:   boolean;
+  detections:    DetectionResult[];
+  environment:   Environment;
+  gpsAccuracy:   number | null;
+  position:      GeolocationCoordinates | null;
+  sessionId:     string | null;
+  // Camera controls
+  /** Which camera is currently active. Default: 'environment' (rear) */
+  cameraFacing:       'environment' | 'user';
+  /** true when the device has > 1 camera — flip button is shown */
+  hasMultipleCameras: boolean;
+  /** Toggle between front and rear camera */
+  onFlipCamera:       () => void;
   // Route props
-  route: MapsRoute | null;
-  currentAddress: string | null;
-  travelMode: TravelMode;
-  setTravelMode: (mode: TravelMode) => void;
-  calculateRoute: (destination: string) => Promise<void>;
-  clearRoute: () => void;
-  destination: string | null;
-  routeLoading?: boolean;
-  routeError?: string | null;
+  route:           MapsRoute | null;
+  currentAddress:  string | null;
+  travelMode:      TravelMode;
+  setTravelMode:   (mode: TravelMode) => void;
+  calculateRoute:  (destination: string) => Promise<void>;
+  clearRoute:      () => void;
+  destination:     string | null;
+  routeLoading?:   boolean;
+  routeError?:     string | null;
 }
 
 export const NavigationHUD: React.FC<NavigationHUDProps> = ({
@@ -79,6 +84,9 @@ export const NavigationHUD: React.FC<NavigationHUDProps> = ({
   gpsAccuracy,
   position,
   sessionId,
+  cameraFacing,
+  hasMultipleCameras,
+  onFlipCamera,
   route,
   currentAddress,
   travelMode,
@@ -87,11 +95,11 @@ export const NavigationHUD: React.FC<NavigationHUDProps> = ({
   clearRoute,
   destination,
   routeLoading = false,
-  routeError = null,
+  routeError   = null,
 }) => {
   const gpsLocked = gpsAccuracy !== null && gpsAccuracy <= 20;
-  const envColor = environment === 'indoor' ? 'amber' : 'cyan';
-  const envTag =
+  const envColor  = environment === 'indoor' ? 'amber' : 'cyan';
+  const envTag    =
     environment === 'indoor'  ? '● INDOOR MODE'  :
     environment === 'outdoor' ? '● OUTDOOR MODE' :
     '● DETECTING ENV…';
@@ -118,7 +126,7 @@ export const NavigationHUD: React.FC<NavigationHUDProps> = ({
 
       <div className="grid grid-cols-1 lg:grid-cols-[280px_1fr_280px] gap-4 lg:gap-5">
 
-        {/* Left panel — map + destination search + detection */}
+        {/* ── Left panel — map + destination search + detection ─────────── */}
         <div className="flex flex-col gap-4">
 
           <HUDPanel title="Current Location">
@@ -165,17 +173,20 @@ export const NavigationHUD: React.FC<NavigationHUDProps> = ({
 
         </div>
 
-        {/* Center panel — camera + ARIA voice */}
+        {/* ── Centre panel — camera feed + ARIA voice ───────────────────── */}
         <div className="flex flex-col gap-4">
           <CameraFeed
             videoRef={videoRef}
             isCapturing={isCapturing}
             detections={detections}
+            cameraFacing={cameraFacing}
+            hasMultipleCameras={hasMultipleCameras}
+            onFlipCamera={onFlipCamera}
           />
           <ARIAVoiceCard isSpeaking={isSpeaking} transcript={transcript} />
         </div>
 
-        {/* Right panel — route steps + haptic + SOS */}
+        {/* ── Right panel — route steps + haptic + SOS ─────────────────── */}
         <div className="flex flex-col gap-4">
           <HUDPanel title="Active Route">
             <RouteSteps steps={route?.steps} />

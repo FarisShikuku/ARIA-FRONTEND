@@ -2,31 +2,44 @@ import React, { useState, useCallback } from 'react';
 import type { DetectionResult } from '@/hooks/useNavigationSession';
 
 /**
- * CameraFeed.tsx — MODIFIED
+ * CameraFeed.tsx — Navigation / Assist
  *
- * CHANGE: Live camera controls added — Pause / Resume / Snapshot.
+ * CHANGES:
  *
- * WHY: The camera feed had no runtime controls. Users needed the ability to
- * pause the live video without ending the session (e.g. to inspect a frame),
- * resume it, or take a snapshot for reference.
+ * 1. DEFAULT IS REAR CAMERA (environment)
+ *    Navigation and Assist both point the camera at the world, not the user.
+ *    The facingMode displayed in the badge defaults to 'environment'.
+ *    The actual camera selection is controlled upstream via useMediaCapture
+ *    (which receives facingMode='environment' from the navigation/assist page).
+ *    This component reflects and controls that via onFlipCamera prop.
  *
- * Implementation:
- *   - isPaused local state controls whether the <video> element is paused.
- *   - handlePause/handleResume call videoRef.current.pause() / .play() directly
- *     on the DOM element so the stream stays alive — only rendering is frozen.
- *   - handleSnapshot draws the current video frame to an offscreen canvas and
- *     opens it as a PNG download — no server round-trip needed.
- *   - Controls bar sits at the top-right of the feed as a translucent overlay.
- *     Buttons use the same font-mono / tag styling as the rest of the HUD.
- *   - The LIVE / STANDBY label in the bottom bar now also shows PAUSED state.
+ * 2. FLIP CAMERA BUTTON — only shown when hasMultipleCameras === true
+ *    Devices with a single camera (laptops, basic phones) never see the button.
+ *    Multi-camera phones see it and can toggle between front and rear.
+ *    Pressing it calls onFlipCamera which updates state in the parent page,
+ *    which updates the facingMode prop on useMediaCapture, which restarts
+ *    the stream with the new camera.
  *
- * All existing simulation scene, detection boxes, and HUD overlays are unchanged.
+ * 3. PAUSE / RESUME / SNAPSHOT controls are functional (unchanged from before)
+ *    Pause/Resume call videoRef.current.pause() / .play() directly — the
+ *    MediaStream stays alive, only rendering is frozen.
+ *    Snapshot draws the current frame to a canvas and triggers a PNG download.
+ *
+ * 4. video element is NEVER mirrored
+ *    Navigation and Assist show the real world — mirroring would be wrong.
+ *    (Coach's VideoFeed.tsx mirrors only on facingMode='user'.)
  */
 
 interface CameraFeedProps {
-  videoRef:    React.RefObject<HTMLVideoElement | null>;
-  isCapturing: boolean;
-  detections:  DetectionResult[];
+  videoRef:           React.RefObject<HTMLVideoElement | null>;
+  isCapturing:        boolean;
+  detections:         DetectionResult[];
+  /** Current facing mode — passed from parent so badge stays in sync */
+  cameraFacing?:      'environment' | 'user';
+  /** Whether the device has more than one camera — controls flip button visibility */
+  hasMultipleCameras?: boolean;
+  /** Called when the user presses the flip button — parent updates facingMode prop */
+  onFlipCamera?:      () => void;
 }
 
 function urgencyColors(urgency: number) {
@@ -35,11 +48,18 @@ function urgencyColors(urgency: number) {
   return                      { border: 'border-green', text: 'text-green', bg: 'bg-green-dim' };
 }
 
-export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, detections }) => {
+export const CameraFeed: React.FC<CameraFeedProps> = ({
+  videoRef,
+  isCapturing,
+  detections,
+  cameraFacing      = 'environment',   // default: rear camera for navigation
+  hasMultipleCameras = false,
+  onFlipCamera,
+}) => {
   const topDetection   = detections?.[0] ?? null;
   const hasHighUrgency = topDetection && topDetection.urgency > 0.6;
 
-  // ── Live control state ────────────────────────────────────────────────────
+  // ── Local feed controls (pause/resume affect only rendering, not the stream) ──
   const [isPaused, setIsPaused] = useState(false);
 
   const handlePause = useCallback(() => {
@@ -48,7 +68,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
   }, [videoRef]);
 
   const handleResume = useCallback(() => {
-    videoRef.current?.play().catch(() => {/* autoplay policy — ignored */});
+    videoRef.current?.play().catch(() => {/* autoplay policy — non-fatal */});
     setIsPaused(false);
   }, [videoRef]);
 
@@ -68,13 +88,16 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
   }, [videoRef]);
 
   // Status label for bottom bar
-  const feedStatus = !isCapturing ? 'STANDBY' : isPaused ? 'PAUSED' : 'LIVE';
+  const feedStatus   = !isCapturing ? 'STANDBY' : isPaused ? 'PAUSED' : 'LIVE';
   const feedDotColor = !isCapturing ? 'text-white/30' : isPaused ? 'text-amber' : 'text-red';
+
+  // Camera badge label
+  const facingLabel = cameraFacing === 'environment' ? '↩ BACK' : '↪ FRONT';
 
   return (
     <div className="relative rounded-xl overflow-hidden aspect-[16/10] bg-black glow-box">
 
-      {/* ── Simulated scene ───────────────────────────────────────────────── */}
+      {/* ── Simulated standby scene (shown before camera starts) ─────────── */}
       <div
         className={`absolute inset-0 transition-opacity duration-500 ${
           isCapturing ? 'opacity-0' : 'opacity-100'
@@ -125,7 +148,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
         )}
       </div>
 
-      {/* ── Real camera stream ───────────────────────────────────────────── */}
+      {/* ── Real camera stream — never mirrored for navigation/assist ────── */}
       <video
         ref={videoRef}
         autoPlay
@@ -136,7 +159,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
         }`}
       />
 
-      {/* ── HUD overlay ──────────────────────────────────────────────────── */}
+      {/* ── HUD overlay (pointer-events: none so video controls work) ─────── */}
       <div className="absolute inset-0 pointer-events-none">
         {/* Corner brackets */}
         <div className="absolute top-4 left-4 w-6 h-6 border-t-2 border-l-2 border-cyan/60" />
@@ -144,7 +167,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
         <div className="absolute bottom-4 left-4 w-6 h-6 border-b-2 border-l-2 border-cyan/60" />
         <div className="absolute bottom-4 right-4 w-6 h-6 border-b-2 border-r-2 border-cyan/60" />
 
-        {/* Detection boxes */}
+        {/* Detection bounding boxes */}
         {detections.map((d, i) => {
           if (!d.bbox) return null;
           const c = urgencyColors(d.urgency);
@@ -162,7 +185,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
           );
         })}
 
-        {/* High-urgency alert */}
+        {/* High-urgency alert banner */}
         {hasHighUrgency && topDetection && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-red-dim border border-red/50 rounded-full px-4 py-1.5 font-mono text-[11px] font-medium text-red tracking-wider flex items-center gap-2 animate-slide-in-up">
             <div className="w-2 h-2 rounded-full bg-red animate-blink" />
@@ -171,7 +194,7 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
           </div>
         )}
 
-        {/* Pause overlay indicator */}
+        {/* Pause overlay */}
         {isPaused && isCapturing && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/40">
             <div className="font-mono text-lg text-amber tracking-widest flex items-center gap-2">
@@ -180,12 +203,12 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
           </div>
         )}
 
-        {/* Navigation arrow */}
+        {/* Navigation arrow — only when live */}
         {!isPaused && (
           <div className="absolute bottom-[18%] left-1/2 -translate-x-1/2 text-3xl text-cyan animate-float">▲</div>
         )}
 
-        {/* Info bar */}
+        {/* Bottom status bar */}
         <div className="absolute bottom-0 left-0 right-0 h-10 bg-gradient-to-t from-black/90 to-transparent flex items-end px-4 pb-2 gap-4">
           <div className={`font-mono text-[9px] flex items-center gap-1 ${feedDotColor}`}>
             <span>●</span>
@@ -198,11 +221,31 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
         </div>
       </div>
 
-      {/* ── Live controls — pointer-events enabled ────────────────────────
-          Positioned top-right, inside the feed. Only shown when camera is
-          active so they don't clutter the standby scene.                  */}
+      {/* ── Camera facing badge — bottom left, above status bar ───────────── */}
       {isCapturing && (
-        <div className="absolute top-3 right-10 flex items-center gap-1.5 z-10">
+        <div className="absolute bottom-12 left-3 z-10">
+          <span className="font-mono text-[10px] uppercase tracking-wider px-2 py-1 rounded bg-black/50 text-white/50 border border-white/10">
+            {facingLabel}
+          </span>
+        </div>
+      )}
+
+      {/* ── Interactive controls — top-right ──────────────────────────────── */}
+      {isCapturing && (
+        <div className="absolute top-3 right-3 flex items-center gap-1.5 z-10">
+
+          {/* Flip camera — only on multi-camera devices */}
+          {hasMultipleCameras && onFlipCamera && (
+            <button
+              onClick={onFlipCamera}
+              title={cameraFacing === 'environment' ? 'Switch to front camera' : 'Switch to rear camera'}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-sm font-mono text-[10px] font-medium bg-black/60 border border-cyan/40 text-cyan hover:bg-cyan/20 transition-colors backdrop-blur-sm"
+            >
+              🔄 {cameraFacing === 'environment' ? 'Front' : 'Rear'}
+            </button>
+          )}
+
+          {/* Pause / Resume */}
           {!isPaused ? (
             <button
               onClick={handlePause}
@@ -220,6 +263,8 @@ export const CameraFeed: React.FC<CameraFeedProps> = ({ videoRef, isCapturing, d
               ▶ Resume
             </button>
           )}
+
+          {/* Snapshot */}
           <button
             onClick={handleSnapshot}
             title="Save snapshot"
