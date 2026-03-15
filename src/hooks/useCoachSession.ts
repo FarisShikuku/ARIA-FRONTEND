@@ -182,6 +182,9 @@ export function useCoachSession(): UseCoachSessionReturn {
       aria.activate('coach');
     }
   }, [aria.introState]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Handle WS messages from backend ──────────────────────────────────────
+  const handleWsMessage = useCallback((msg: any) => {
     if (!msg?.type) return;
 
     if (msg.type === 'coach_metrics') {
