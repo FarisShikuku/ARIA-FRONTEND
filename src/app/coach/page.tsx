@@ -1,24 +1,16 @@
 'use client';
 
 /**
- * coach/page.tsx — REWRITTEN
+ * src/app/coach/page.tsx
  *
- * WHAT CHANGED vs previous version:
- * Previously rendered <CoachLayout /> with zero real data — everything was
- * hardcoded static values inside child components.
+ * CHANGE vs previous version:
  *
- * Now:
- * 1. Calls useCoachSession() — single hook that owns all coach state/logic
- * 2. Renders <CoachAgentBar /> fixed below navbar (top-16) — the permanent
- *    floating AI control bar with waveform, transcript, pause/mute/navigate
- * 3. Adds pt-12 to push content below the CoachAgentBar (bar height = 48px)
- * 4. Phase-gates the UI:
- *    - idle/selecting: show CoachModeSelector full screen
- *    - ready: show CoachLayout with a "Start Session" overlay button
- *    - active/paused: full CoachLayout with real live data
- *    - ended: show session summary / restart prompt
- * 5. Passes all real props down to CoachLayout so child components get
- *    live metrics, real timeline events, real agent state, real video ref
+ * hasMultipleCameras passed to CoachLayout → CoachMain → VideoFeed
+ * WHY: VideoFeed only renders the flip button when hasMultipleCameras is true.
+ * Previously it was always shown (even on laptops with one camera).
+ * useCoachSession now exposes hasMultipleCameras from useMediaCapture.
+ *
+ * Everything else unchanged.
  */
 
 import React from 'react';
@@ -55,12 +47,10 @@ export default function CoachPage() {
       {/* ── pt-12 clears the 48px CoachAgentBar ──────────────────────────── */}
       <div className="pt-12">
 
-        {/* ── Phase: Mode Selection ──────────────────────────────────────── */}
+        {/* ── Phase: Mode Selection ─────────────────────────────────────── */}
         {showSelector && (
           <CoachModeSelector
-            onSelect={(mode) => {
-              coach.selectMode(mode);
-            }}
+            onSelect={(mode) => { coach.selectMode(mode); }}
             selectedMode={session.mode}
           />
         )}
@@ -88,6 +78,7 @@ export default function CoachPage() {
               onToggleMute={coach.toggleMute}
               onChangeMode={() => coach.selectMode(session.mode!)}
               onFlipCamera={coach.flipCamera}
+              hasMultipleCameras={coach.hasMultipleCameras}
             />
           </div>
         )}

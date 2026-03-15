@@ -1,16 +1,15 @@
-
 'use client';
 
 /**
- * CoachLayout.tsx — UPDATED
+ * CoachLayout.tsx
  *
- * WHAT CHANGED:
- * Previously had zero props — all data (session type, timer, tags) was
- * hardcoded static strings. Now accepts all live session props from
- * coach/page.tsx and passes them down to CoachMain and CoachSidebar.
+ * CHANGE vs previous version:
  *
- * The "Start Session" overlay is rendered here when phase === 'ready'
- * so the user sees the coach UI behind it and knows what they're starting.
+ * hasMultipleCameras prop added and passed to CoachMain → VideoFeed.
+ * WHY: VideoFeed only renders the flip button when hasMultipleCameras === true.
+ * This prop flows: coach/page → CoachLayout → CoachMain → VideoFeed.
+ *
+ * Everything else unchanged.
  */
 
 import React from 'react';
@@ -21,34 +20,36 @@ import type { CoachMode, CoachMetrics, HintEvent, CoachSessionPhase } from '@/li
 import type { AgentState } from '@/hooks/useAgentState';
 
 const MODE_LABELS: Record<CoachMode, string> = {
-  interview: 'Interview Session',
+  interview:    'Interview Session',
   presentation: 'Presentation',
-  music: 'Music Performance',
-  mc: 'MC / Public Speaking',
-  sermon: 'Sermon',
-  negotiation: 'Negotiation',
+  music:        'Music Performance',
+  mc:           'MC / Public Speaking',
+  sermon:       'Sermon',
+  negotiation:  'Negotiation',
 };
 
 interface CoachLayoutProps {
-  mode: CoachMode | null;
-  phase: CoachSessionPhase;
-  agentState: AgentState;
-  metrics: CoachMetrics;
-  events: HintEvent[];
-  elapsedSeconds: number;
-  isMicOn: boolean;
-  isCameraOn: boolean;
-  isMuted: boolean;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  onStart: () => Promise<void>;
-  onPause: () => void;
-  onResume: () => void;
-  onEnd: () => void;
-  onToggleMic: () => void;
-  onToggleCamera: () => void;
-  onToggleMute: () => void;
-  onChangeMode: () => void;
-  onFlipCamera: (facing: 'user' | 'environment') => void;  // NEW
+  mode:               CoachMode | null;
+  phase:              CoachSessionPhase;
+  agentState:         AgentState;
+  metrics:            CoachMetrics;
+  events:             HintEvent[];
+  elapsedSeconds:     number;
+  isMicOn:            boolean;
+  isCameraOn:         boolean;
+  isMuted:            boolean;
+  videoRef:           React.RefObject<HTMLVideoElement | null>;
+  onStart:            () => Promise<void>;
+  onPause:            () => void;
+  onResume:           () => void;
+  onEnd:              () => void;
+  onToggleMic:        () => void;
+  onToggleCamera:     () => void;
+  onToggleMute:       () => void;
+  onChangeMode:       () => void;
+  onFlipCamera:       (facing: 'user' | 'environment') => void;
+  /** true when device has > 1 camera — flip button shown/hidden in VideoFeed */
+  hasMultipleCameras: boolean;
 }
 
 export const CoachLayout: React.FC<CoachLayoutProps> = ({
@@ -71,13 +72,14 @@ export const CoachLayout: React.FC<CoachLayoutProps> = ({
   onToggleMute,
   onChangeMode,
   onFlipCamera,
+  hasMultipleCameras,
 }) => {
   const isActive = phase === 'active';
   const isPaused = phase === 'paused';
   const isReady  = phase === 'ready';
 
   const formatTime = (s: number) => {
-    const m = Math.floor(s / 60).toString().padStart(2, '0');
+    const m   = Math.floor(s / 60).toString().padStart(2, '0');
     const sec = (s % 60).toString().padStart(2, '0');
     return `${m}:${sec}`;
   };
@@ -94,19 +96,13 @@ export const CoachLayout: React.FC<CoachLayoutProps> = ({
           </h2>
         </div>
         <div className="flex flex-wrap gap-2.5 items-center">
-          {mode && (
-            <Tag color="amber">
-              ● {MODE_LABELS[mode].toUpperCase()}
-            </Tag>
-          )}
+          {mode && <Tag color="amber">● {MODE_LABELS[mode].toUpperCase()}</Tag>}
           {isActive && <Tag color="green">RECORDING</Tag>}
           {isPaused && <Tag color="amber">PAUSED</Tag>}
           {isReady  && <Tag color="cyan">READY</Tag>}
           {(isActive || isPaused) && (
             <span className="font-mono text-sm text-cyan">{formatTime(elapsedSeconds)}</span>
           )}
-
-          {/* Change mode button */}
           <button
             onClick={onChangeMode}
             className="font-mono text-[10px] tracking-wider uppercase px-3 py-1 rounded-sm border border-border-bright text-text-muted hover:text-cyan hover:border-cyan hover:bg-cyan-ghost transition-all"
@@ -132,6 +128,7 @@ export const CoachLayout: React.FC<CoachLayoutProps> = ({
           onResume={onResume}
           onEnd={onEnd}
           onFlipCamera={onFlipCamera}
+          hasMultipleCameras={hasMultipleCameras}
         />
         <CoachSidebar
           agentState={agentState}
@@ -142,7 +139,7 @@ export const CoachLayout: React.FC<CoachLayoutProps> = ({
         />
       </div>
 
-      {/* ── Start Session overlay (shown when phase === 'ready') ─────────── */}
+      {/* ── Start Session overlay (phase === 'ready') ─────────────────────── */}
       {isReady && (
         <div className="absolute inset-0 flex items-center justify-center bg-bg-void/80 backdrop-blur-sm rounded-xl z-10">
           <div className="flex flex-col items-center gap-4 text-center px-8">

@@ -3,9 +3,32 @@
 /**
  * src/hooks/useAssistSession.ts
  *
- * Full session logic for the ARIA Assist page.
- * Manages: WebSocket/Gemini session, mic, camera (front/back), screenshots,
- * transcript, task timeline, step breakdown, session notes, save/export.
+ * CHANGES vs previous version:
+ *
+ * 1. facingMode STATE DRIVES useMediaCapture — rear camera by default
+ *    WHY: Previously useMediaCapture was called with no facingMode so it
+ *    defaulted to 'user' (front camera) — wrong for Assist which points the
+ *    camera at a physical task. Now facingMode state defaults to 'environment'
+ *    and is passed directly into useMediaCapture. When it changes, useMediaCapture
+ *    restarts the stream automatically via its own facingMode useEffect.
+ *
+ * 2. flipCamera REWRITTEN — no more manual getUserMedia call
+ *    WHY: The old flipCamera manually called navigator.mediaDevices.getUserMedia
+ *    and then called startCapture() on top of it, resulting in two concurrent
+ *    streams and a double-capture bug. The fix is simple: just update cameraFacing
+ *    state → useMediaCapture sees the new facingMode prop → restarts stream cleanly.
+ *
+ * 3. REMOVED redundant camera detection useEffect
+ *    WHY: useMediaCapture now detects and returns hasMultipleCameras itself
+ *    (probed after getUserMedia permission is granted when labels are available).
+ *    The manual enumerateDevices() call in the old useEffect was running before
+ *    permission was granted, so device labels were hidden and the count was
+ *    unreliable. Now we rely on useMediaCapture's detection instead.
+ *
+ * 4. hasMultipleCameras now comes from useMediaCapture (not local state)
+ *
+ * Everything else (session state, transcript parsing, task steps, timer,
+ * screenshot, export) is unchanged.
  */
 
 import { useState, useEffect, useRef, useCallback, type RefObject } from 'react';
@@ -52,7 +75,7 @@ export interface AssistSessionState {
   isCameraOn: boolean;
   cameraFacing: 'environment' | 'user';
   hasMultipleCameras: boolean;
-  sessionDuration: number;   // seconds
+  sessionDuration: number;
   screenshotDataUrl: string | null;
 }
 
@@ -86,44 +109,41 @@ VOICE RULES:
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
 export function useAssistSession() {
-  const [phase, setPhase] = useState<AssistSessionPhase>('idle');
-  const [taskTitle, setTaskTitle] = useState('');
-  const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
-  const [steps, setSteps] = useState<TaskStep[]>([]);
-  const [timeline, setTimeline] = useState<TimelineEvent[]>([]);
+  const [phase, setPhase]               = useState<AssistSessionPhase>('idle');
+  const [taskTitle, setTaskTitle]       = useState('');
+  const [transcript, setTranscript]     = useState<TranscriptEntry[]>([]);
+  const [steps, setSteps]               = useState<TaskStep[]>([]);
+  const [timeline, setTimeline]         = useState<TimelineEvent[]>([]);
   const [sessionNotes, setSessionNotes] = useState('');
-  const [isMuted, setIsMuted] = useState(false);
-  const [isCameraOn, setIsCameraOn] = useState(true);
-  const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
-  const [hasMultipleCameras, setHasMultipleCameras] = useState(false);
+  const [isMuted, setIsMuted]           = useState(false);
+  const [isCameraOn, setIsCameraOn]     = useState(true);
   const [sessionDuration, setSessionDuration] = useState(0);
   const [screenshotDataUrl, setScreenshotDataUrl] = useState<string | null>(null);
 
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const transcriptRef = useRef<TranscriptEntry[]>([]);
-  const phaseRef = useRef<AssistSessionPhase>('idle');
+  // FIX: cameraFacing state drives useMediaCapture — default rear camera
+  const [cameraFacing, setCameraFacing] = useState<'environment' | 'user'>('environment');
 
-  // Keep phaseRef in sync for use inside callbacks/effects without stale closure
+  const timerRef      = useRef<ReturnType<typeof setInterval> | null>(null);
+  const transcriptRef = useRef<TranscriptEntry[]>([]);
+  const phaseRef      = useRef<AssistSessionPhase>('idle');
+
   useEffect(() => { phaseRef.current = phase; }, [phase]);
 
-  // ── Shared ARIA session from context ─────────────────────────────────────
   const aria = useAriaContext();
 
-  // ── Media capture — videoRef is owned here and returned for <video> element
-  const { videoRef, isCapturing, startCapture, stopCapture } = useMediaCapture({
+  // FIX: pass cameraFacing as facingMode — useMediaCapture handles stream restart
+  // when cameraFacing changes (via its own facingMode useEffect).
+  // hasMultipleCameras is now sourced from useMediaCapture (reliable post-permission).
+  const {
+    videoRef,
+    isCapturing,
+    startCapture,
+    stopCapture,
+    hasMultipleCameras,   // ← from useMediaCapture, not local state
+  } = useMediaCapture({
     sendFrame: aria.sendBinary,
+    facingMode: cameraFacing,   // ← drives camera selection
   });
-
-  // ── Detect multiple cameras ───────────────────────────────────────────────
-  useEffect(() => {
-    if (typeof navigator === 'undefined') return;
-    navigator.mediaDevices?.enumerateDevices().then((devices) => {
-      const cams = devices.filter((d) => d.kind === 'videoinput');
-      setHasMultipleCameras(cams.length > 1);
-      // Default to back camera if available
-      if (cams.length > 0) setCameraFacing('environment');
-    }).catch(() => {});
-  }, []);
 
   // ── Subscribe to WS messages ──────────────────────────────────────────────
   useEffect(() => {
@@ -140,16 +160,12 @@ export function useAssistSession() {
 
     const text = aria.transcript;
 
-    // Auto-extract task title: "Task: [title]"
-    // If ARIA says "Task: X" while in listening phase, treat it as a voice task selection
-    // and transition to active (start video, hide shortcuts)
     const titleMatch = text.match(/Task:\s*(.+?)(?:\.|$)/i);
     if (titleMatch && titleMatch[1]) {
       const detectedTitle = titleMatch[1].trim();
       if (!taskTitle) {
         setTaskTitle(detectedTitle);
         addTimelineEvent(`Task: "${detectedTitle}"`, 'info');
-        // Voice-detected task — hide shortcuts, ARIA now focused on this task
         if (phaseRef.current === 'listening' || phaseRef.current === 'idle') {
           setPhase('active');
           setSessionDuration(0);
@@ -157,7 +173,6 @@ export function useAssistSession() {
       }
     }
 
-    // Auto-extract steps: "Steps:\n1. ...\n2. ..."
     const stepsMatch = text.match(/Steps?:\s*((?:\d+\..+\n?)+)/i);
     if (stepsMatch) {
       const lines = stepsMatch[1]
@@ -174,7 +189,6 @@ export function useAssistSession() {
       }
     }
 
-    // Add to transcript
     const entry: TranscriptEntry = {
       id: `t-${Date.now()}`,
       role: 'aria',
@@ -187,7 +201,6 @@ export function useAssistSession() {
 
   function handleWsMessage(msg: any) {
     if (!msg?.type) return;
-    // Handle any assist-specific backend messages here
     if (msg.type === 'transcription' && msg.role === 'user') {
       const entry: TranscriptEntry = {
         id: `t-${Date.now()}`,
@@ -201,13 +214,12 @@ export function useAssistSession() {
   }
 
   function addTimelineEvent(text: string, type: TimelineEvent['type'] = 'info') {
-    const event: TimelineEvent = {
+    setTimeline((prev) => [...prev, {
       id: `ev-${Date.now()}`,
       text,
       timestamp: Date.now(),
       type,
-    };
-    setTimeline((prev) => [...prev, event]);
+    }]);
   }
 
   // ── Session timer ─────────────────────────────────────────────────────────
@@ -226,24 +238,15 @@ export function useAssistSession() {
 
   const startSession = useCallback(async () => {
     try {
-      // Start mic and camera together
       await aria.enableVoice();
       await startCapture();
-
-      // Wait for mic AudioContext to settle
       await new Promise<void>((resolve) => setTimeout(resolve, 250));
-
-      // Tell backend to activate assist mode with camera-awareness greeting.
-      // The greeting instructs ARIA to:
-      //   a) confirm it can see through the camera
-      //   b) ask user to pick a task or say what they need
       aria.sendText(JSON.stringify({
         type: 'control',
         action: 'start_assist',
         initial_query: '',
         camera_active: true,
       }));
-
       setPhase('listening');
       setSessionDuration(0);
       setTranscript([]);
@@ -271,7 +274,7 @@ export function useAssistSession() {
   const endSession = useCallback(async () => {
     aria.stop();
     stopCapture();
-    setPhase('ended');  // show 'Start again' button, no auto-restart
+    setPhase('ended');
     setTaskTitle('');
     setTranscript([]);
     setSteps([]);
@@ -282,13 +285,9 @@ export function useAssistSession() {
     addTimelineEvent('Session ended', 'info');
   }, [aria, stopCapture]);
 
-  // selectTask — user picked a task (by click or voice).
-  // Hides shortcuts, tells ARIA the specific task, starts task timer.
-  // Camera and mic are already running.
   const selectTask = useCallback((query: string, label: string) => {
     setTaskTitle(label);
     addTimelineEvent(`Task: "${label}"`, 'info');
-    // Tell ARIA the specific task — it will immediately start helping
     aria.sendText(JSON.stringify({
       type: 'control',
       action: 'start_assist',
@@ -300,11 +299,7 @@ export function useAssistSession() {
   }, [aria]);
 
   const toggleMute = useCallback(() => {
-    if (isMuted) {
-      aria.unmute();
-    } else {
-      aria.mute();
-    }
+    if (isMuted) { aria.unmute(); } else { aria.mute(); }
     setIsMuted((m) => !m);
   }, [isMuted, aria]);
 
@@ -318,43 +313,26 @@ export function useAssistSession() {
     }
   }, [isCameraOn, startCapture, stopCapture]);
 
-  const flipCamera = useCallback(async () => {
-    const newFacing = cameraFacing === 'environment' ? 'user' : 'environment';
-    setCameraFacing(newFacing);
-    // Stop existing stream, then open new one with correct facingMode
-    stopCapture();
-    await new Promise<void>((r) => setTimeout(r, 200));
-    // startCapture hardcodes 'environment', so we manually set srcObject
-    // for the flip case using the updated facing mode
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: newFacing, width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: false,
-      });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.play().catch(() => {});
-      }
-      await startCapture();
-    } catch {
-      // Fallback — just restart with default
-      await startCapture();
-    }
-  }, [cameraFacing, startCapture, stopCapture, videoRef]);
+  // FIX: flipCamera — just update cameraFacing state.
+  // useMediaCapture watches its facingMode prop and restarts the stream cleanly.
+  // The old version manually called getUserMedia + startCapture() which created
+  // two concurrent streams. This version is one line.
+  const flipCamera = useCallback(() => {
+    setCameraFacing(prev => prev === 'environment' ? 'user' : 'environment');
+  }, []);
 
   const takeScreenshot = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 640;
+    canvas.width  = video.videoWidth  || 640;
     canvas.height = video.videoHeight || 480;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     ctx.drawImage(video, 0, 0);
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-    setScreenshotDataUrl(dataUrl);
+    setScreenshotDataUrl(canvas.toDataURL('image/jpeg', 0.9));
     addTimelineEvent('Screenshot captured', 'good');
-  }, []);
+  }, [videoRef]); // eslint-disable-line
 
   const downloadScreenshot = useCallback(() => {
     if (!screenshotDataUrl) return;
@@ -365,13 +343,9 @@ export function useAssistSession() {
   }, [screenshotDataUrl]);
 
   const toggleStep = useCallback((stepId: string) => {
-    setSteps((prev) =>
-      prev.map((s) => s.id === stepId ? { ...s, done: !s.done } : s)
-    );
+    setSteps((prev) => prev.map((s) => s.id === stepId ? { ...s, done: !s.done } : s));
     const step = steps.find((s) => s.id === stepId);
-    if (step && !step.done) {
-      addTimelineEvent(`✓ ${step.text}`, 'good');
-    }
+    if (step && !step.done) addTimelineEvent(`✓ ${step.text}`, 'good');
   }, [steps]);
 
   const updateSessionNotes = useCallback((notes: string) => {
@@ -404,16 +378,15 @@ export function useAssistSession() {
     ].join('\n');
 
     const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
     a.download = `aria-assist-${taskTitle || 'session'}-${Date.now()}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   }, [transcript, steps, timeline, sessionNotes, taskTitle, sessionDuration]);
 
   const sendQuickTask = useCallback((task: string) => {
-    // If already active, just update the task title and notify ARIA
     if (phase === 'active' || phase === 'paused') {
       setTaskTitle(task);
       aria.sendText(JSON.stringify({
@@ -423,11 +396,9 @@ export function useAssistSession() {
       }));
       addTimelineEvent(`Task switched: "${task}"`, 'info');
     }
-    // Otherwise handled by selectTask
   }, [phase, aria]); // eslint-disable-line
 
   return {
-    // State
     session: {
       phase,
       taskTitle,
@@ -438,21 +409,18 @@ export function useAssistSession() {
       isMuted,
       isCameraOn,
       cameraFacing,
-      hasMultipleCameras,
+      hasMultipleCameras,   // ← from useMediaCapture (reliable)
       sessionDuration,
       screenshotDataUrl,
     } as AssistSessionState,
 
-    // Refs
     videoRef,
     isCapturing,
 
-    // Aria state
-    isSpeaking: aria.isSpeaking,
+    isSpeaking:  aria.isSpeaking,
     isListening: aria.isListening,
-    ariaState: aria.geminiState,
+    ariaState:   aria.geminiState,
 
-    // Actions
     startSession,
     pauseSession,
     resumeSession,
@@ -471,10 +439,6 @@ export function useAssistSession() {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-function formatTitle(query: string): string {
-  return query.length > 40 ? query.slice(0, 37) + '...' : query;
-}
 
 export function formatDuration(seconds: number): string {
   const m = Math.floor(seconds / 60).toString().padStart(2, '0');

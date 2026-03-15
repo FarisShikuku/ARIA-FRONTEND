@@ -3,23 +3,19 @@
  *
  * CHANGES vs previous version:
  *
- * 1. activate() NOW CALLS aria.activate('navigation') NOT aria.activate()
- *    WHY: aria.activate() with no argument sends 'start_intro' to the backend,
- *    which creates a session with mode=None and triggers the home greeting.
- *    The home greeting then played in full on the navigation page before the
- *    navigation greeting started — two voices, wrong context.
- *    FIX: activate('navigation') sends 'start_navigation' directly — the
- *    backend creates a fresh Gemini session with mode='navigation' and sends
- *    only the navigation intro. The home greeting never fires.
+ * 1. facingMode OPTION ADDED — defaults to 'environment' (rear camera)
+ *    WHY: Navigation points the camera at the world for obstacle detection.
+ *    Previously useMediaCapture was called with no facingMode, so it defaulted
+ *    to 'user' (front camera) — wrong for navigation.
+ *    The navigate/page.tsx passes cameraFacing state here, and when the user
+ *    presses the flip button the state updates, which changes this prop,
+ *    which triggers useMediaCapture to restart the stream with the new camera.
  *
- * 2. REMOVED: the separate navGreetingRef / start_navigation sendText call
- *    WHY: Previously we sent start_navigation as a second message AFTER
- *    start_intro already fired. That was the exact cause of the double voice.
- *    Now start_navigation is the ONLY message sent — via activate('navigation').
- *    The set_mode sendText is also removed because start_navigation sets
- *    the session mode on the backend as part of its own handler.
+ * 2. hasMultipleCameras EXPORTED
+ *    WHY: navigate/page.tsx passes this to NavigationHUD → CameraFeed to
+ *    conditionally show the flip button. Single-camera devices never see it.
  *
- * Everything else is identical to the previous version.
+ * Everything else (activate, GPS, route, detections, agent state) is unchanged.
  */
 
 import { useState, useEffect, useRef, useCallback, type RefObject } from 'react'
@@ -36,6 +32,11 @@ export interface DetectionResult {
   direction: string | null
   distance_hint: string | null
   bbox: { x: number; y: number; w: number; h: number } | null
+}
+
+export interface UseNavigationSessionOptions {
+  /** Which camera to open. Default: 'environment' (rear) — points at the world. */
+  facingMode?: 'environment' | 'user'
 }
 
 export interface UseNavigationSessionReturn {
@@ -57,6 +58,8 @@ export interface UseNavigationSessionReturn {
   startCapture: () => Promise<void>
   stopCapture: () => void
   cameraError: string | null
+  /** true when the device has more than one camera — show flip button */
+  hasMultipleCameras: boolean
   environment: Environment
   position: GeolocationCoordinates | null
   accuracy: number | null
@@ -76,25 +79,15 @@ export interface UseNavigationSessionReturn {
   setDestination: (d: string | null) => void
 }
 
-export function useNavigationSession(): UseNavigationSessionReturn {
+export function useNavigationSession(
+  { facingMode = 'environment' }: UseNavigationSessionOptions = {}
+): UseNavigationSessionReturn {
 
   const [detections, setDetections] = useState<DetectionResult[]>([])
   const [lastWsMessage, setLastWsMessage] = useState<any>(null)
   const [destination, setDestination] = useState<string | null>(null)
 
   const aria = useAriaIntro()
-
-  // FIX: Removed the modeSentRef / set_mode sendText useEffect.
-  // WHY: set_mode was sent as a separate message after start_intro already fired.
-  // The session mode is now set inside the start_navigation backend handler
-  // when activate('navigation') is called — no separate set_mode needed.
-
-  // FIX: Removed the navGreetingRef / start_navigation sendText useEffect.
-  // WHY: This was the exact cause of the double voice bug. It sent start_navigation
-  // as a second message on top of start_intro which had already been queued.
-  // Both prompts ran in the same Gemini session 1ms apart — home greeting played
-  // in full (107 responses), then navigation greeting played after (47 responses).
-  // Now activate('navigation') is the only activation path — no second message.
 
   useEffect(() => {
     const unsubscribe = aria.subscribeToMessages((msg: any) => {
@@ -123,12 +116,14 @@ export function useNavigationSession(): UseNavigationSessionReturn {
     startCapture,
     stopCapture,
     error: cameraError,
+    hasMultipleCameras,   // ← NEW: surfaced from useMediaCapture
   } = useMediaCapture({
     sendFrame: aria.sendBinary,
     enabled: isSessionActive,
     fps: 1,
     quality: 0.7,
     maxDimension: 768,
+    facingMode,   // ← NEW: 'environment' by default; updates when user flips camera
   })
 
   useEffect(() => {
@@ -163,7 +158,6 @@ export function useNavigationSession(): UseNavigationSessionReturn {
     mode: 'navigation',
   })
 
-  // Google Maps route hook — position drives live dot + step tracking
   const {
     route,
     isLoading: routeLoading,
@@ -175,7 +169,6 @@ export function useNavigationSession(): UseNavigationSessionReturn {
     clearRoute,
   } = useGoogleMapsRoute(position)
 
-  // When current address resolves for the first time, tell ARIA via context
   const addressAnnouncedRef = useRef(false)
   useEffect(() => {
     if (!currentAddress || addressAnnouncedRef.current || !isSessionActive) return
@@ -191,7 +184,6 @@ export function useNavigationSession(): UseNavigationSessionReturn {
     }))
   }, [currentAddress]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // When a route is calculated, tell ARIA the first instruction
   const routeAnnouncedRef = useRef<string | null>(null)
   useEffect(() => {
     if (!route || !destination) return
@@ -218,9 +210,6 @@ export function useNavigationSession(): UseNavigationSessionReturn {
   return {
     introState: aria.introState,
     sessionId: aria.sessionId,
-    // FIX: wrap activate to always pass 'navigation' mode.
-    // This ensures start_navigation is sent instead of start_intro,
-    // preventing the home greeting from firing on the navigation page.
     activate: () => aria.activate('navigation'),
     stop: aria.stop,
     mute: aria.mute,
@@ -237,6 +226,7 @@ export function useNavigationSession(): UseNavigationSessionReturn {
     startCapture,
     stopCapture,
     cameraError,
+    hasMultipleCameras,   // ← NEW
     environment,
     position,
     accuracy,
