@@ -47,6 +47,62 @@ export const metadata: Metadata = {
   title: 'ARIA — Adaptive Real-time Intelligence Agent',
   description:
     'One unified AI platform. Navigate the world as a visually impaired individual or master every conversation with real-time coaching.',
+
+  // ── Favicon & PWA icons ──────────────────────────────────────────────────
+  // Drop these files into your /public directory:
+  //   /public/favicon.ico          (32×32, ICO format)
+  //   /public/favicon-16x16.png
+  //   /public/favicon-32x32.png
+  //   /public/apple-touch-icon.png (180×180)
+  //   /public/icon-192.png         (192×192)
+  //   /public/icon-512.png         (512×512)
+  //   /public/og-image.png         (1200×630, for social share previews)
+  icons: {
+    icon: [
+      { url: '/favicon-16x16.png', sizes: '16x16', type: 'image/png' },
+      { url: '/favicon-32x32.png', sizes: '32x32', type: 'image/png' },
+    ],
+    apple: [
+      { url: '/apple-touch-icon.png', sizes: '180x180', type: 'image/png' },
+    ],
+    other: [
+      { rel: 'mask-icon', url: '/favicon.ico' },
+    ],
+  },
+
+  // ── PWA manifest ─────────────────────────────────────────────────────────
+  // Create /public/site.webmanifest with the content shown at the bottom of this file
+  manifest: '/site.webmanifest',
+
+  // ── Open Graph (Facebook, WhatsApp, LinkedIn previews) ───────────────────
+  openGraph: {
+    type: 'website',
+    url: 'https://aria-frontend-two.vercel.app',
+    title: 'ARIA — Adaptive Real-time Intelligence Agent',
+    description:
+      'Navigate the world. Master every conversation. Built with Gemini Live API on Google Cloud.',
+    siteName: 'ARIA',
+    images: [
+      {
+        url: '/og-image.png',   // 1200×630 recommended
+        width: 1200,
+        height: 630,
+        alt: 'ARIA — Adaptive Real-time Intelligence Agent',
+      },
+    ],
+  },
+
+  // ── Twitter / X card ─────────────────────────────────────────────────────
+  twitter: {
+    card: 'summary_large_image',
+    title: 'ARIA — Adaptive Real-time Intelligence Agent',
+    description:
+      'Navigate the world. Master every conversation. Built with Gemini Live API on Google Cloud.',
+    images: ['/og-image.png'],
+  },
+
+  // ── Theme color (browser chrome on mobile) ────────────────────────────────
+  themeColor: '#00e5ff',
 };
 
 export default function RootLayout({

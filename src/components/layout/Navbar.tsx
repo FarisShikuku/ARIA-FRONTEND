@@ -98,8 +98,14 @@ export const Navbar: React.FC = () => {
             <span className="hidden md:inline font-mono text-xs text-green tracking-wider">LIVE</span>
           </div>
           <span className="tag tag-cyan text-[10px] hidden md:inline-block">v2.0.1</span>
-          <div className="w-9 h-9 rounded-full bg-gradient-to-br from-cyan-dim to-cyan/80 border border-border-bright flex items-center justify-center font-display font-bold text-sm text-white cursor-pointer">
-            JD
+          {/* Default user avatar placeholder — replace with <Image> once auth profile photo is available */}
+          <div className="w-9 h-9 rounded-full bg-bg-surface border border-border-bright flex items-center justify-center cursor-pointer hover:border-cyan/50 transition-colors duration-200">
+            <svg viewBox="0 0 36 36" fill="none" className="w-5 h-5" xmlns="http://www.w3.org/2000/svg">
+              {/* Head */}
+              <circle cx="18" cy="13" r="5" stroke="#7baec7" strokeWidth="1.5" />
+              {/* Shoulders */}
+              <path d="M6 30c0-6.627 5.373-12 12-12s12 5.373 12 12" stroke="#7baec7" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
           </div>
 
           {/* Mobile Hamburger */}
