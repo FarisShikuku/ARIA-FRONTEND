@@ -1,3 +1,5 @@
+/// <reference types="@types/google.maps" />
+
 /**
  * src/hooks/useGoogleMapsRoute.ts
  *
@@ -122,8 +124,10 @@ export function useGoogleMapsRoute(
   const [travelMode, setTravelMode]     = useState<TravelMode>('WALKING')
   const [mapsReady, setMapsReady]       = useState(false)
 
-  const geocoderRef    = useRef<google.maps.Geocoder | null>(null)
-  const directionsRef  = useRef<google.maps.DirectionsService | null>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const geocoderRef    = useRef<any>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const directionsRef  = useRef<any>(null)
   const addressCacheRef = useRef<Map<string, string>>(new Map())
   const lastGeocodedRef = useRef<{ lat: number; lng: number } | null>(null)
 
@@ -147,11 +151,67 @@ export function useGoogleMapsRoute(
     return new Promise((resolve) => {
       geocoderRef.current!.geocode(
         { location: { lat, lng } },
-        (results, status) => {
-          if (status === 'OK' && results && results[0]) {
-            const addr = results[0].formatted_address
-            addressCacheRef.current.set(key, addr)
-            resolve(addr)
+        (results: any, status: any) => {
+          if (status === 'OK' && results && results.length > 0) {
+            // Try to find a result that is NOT a plus code.
+            // Google returns plus codes (JQ43+MJH) for areas with sparse address data.
+            // We prefer: street address > neighborhood > sublocality > locality.
+            // Walk through all results and pick the most meaningful one.
+            let bestAddress: string | null = null
+
+            for (const result of results) {
+              const formatted: string = result.formatted_address ?? ''
+
+              // Skip pure plus code results (they look like "JQ43+MJH, City, Country")
+              if (/^[A-Z0-9]{4}\+[A-Z0-9]{2,}/.test(formatted)) continue
+
+              // Extract components for a clean readable address
+              const components: any[] = result.address_components ?? []
+
+              const get = (type: string) =>
+                components.find((c: any) => c.types.includes(type))?.long_name ?? ''
+
+              const streetNum    = get('street_number')
+              const route        = get('route')
+              const neighborhood = get('neighborhood')
+              const sublocality  = get('sublocality') || get('sublocality_level_1')
+              const locality     = get('locality')
+              const country      = get('country')
+
+              // Build address from best available components
+              if (route) {
+                const street = streetNum ? `${streetNum} ${route}` : route
+                const area   = sublocality || neighborhood || locality
+                bestAddress  = area ? `${street}, ${area}` : street
+                break
+              } else if (sublocality || neighborhood) {
+                bestAddress = `${sublocality || neighborhood}, ${locality || country}`
+                break
+              } else if (locality) {
+                bestAddress = country ? `${locality}, ${country}` : locality
+                break
+              }
+            }
+
+            // Fallback: use formatted_address of first non-plus-code result
+            if (!bestAddress) {
+              for (const result of results) {
+                const formatted: string = result.formatted_address ?? ''
+                if (!/^[A-Z0-9]{4}\+[A-Z0-9]{2,}/.test(formatted)) {
+                  bestAddress = formatted
+                  break
+                }
+              }
+            }
+
+            // Last resort: strip the plus code prefix from formatted_address
+            if (!bestAddress) {
+              const raw: string = results[0].formatted_address ?? ''
+              bestAddress = raw.replace(/^[A-Z0-9]{4,}\+[A-Z0-9]+,?\s*/, '').trim()
+            }
+
+            addressCacheRef.current.set(key, bestAddress || `${lat.toFixed(4)}, ${lng.toFixed(4)}`)
+            resolve(bestAddress || `${lat.toFixed(4)}, ${lng.toFixed(4)}`)
           } else {
             resolve(`${lat.toFixed(4)}, ${lng.toFixed(4)}`)
           }
@@ -203,8 +263,10 @@ export function useGoogleMapsRoute(
       {
         origin,
         destination,
-        travelMode: google.maps.TravelMode[travelMode],
-        unitSystem: google.maps.UnitSystem.METRIC,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        travelMode: (window as any).google.maps.TravelMode[travelMode],
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        unitSystem: (window as any).google.maps.UnitSystem.METRIC,
       },
       (result, status) => {
         setIsLoading(false)
@@ -214,7 +276,7 @@ export function useGoogleMapsRoute(
         }
 
         const leg = result.routes[0].legs[0]
-        const steps: MapsRouteStep[] = leg.steps.map((step, i) => ({
+        const steps: MapsRouteStep[] = leg.steps.map((step: any, i: number) => ({
           id: String(i),
           instruction: stripHtml(step.instructions),
           distance: step.distance?.value ?? 0,

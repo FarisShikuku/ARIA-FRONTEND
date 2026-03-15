@@ -1,3 +1,4 @@
+/// <reference types="@types/google.maps" />
 'use client';
 
 /**
@@ -32,25 +33,62 @@ declare global {
 
 export const GoogleMap: React.FC<GoogleMapProps> = ({ position, route, destination }) => {
   const mapDivRef       = useRef<HTMLDivElement | null>(null)
-  const mapRef          = useRef<google.maps.Map | null>(null)
-  const userMarkerRef   = useRef<google.maps.Marker | null>(null)
-  const destMarkerRef   = useRef<google.maps.Marker | null>(null)
-  const polylineRef     = useRef<google.maps.Polyline | null>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mapRef          = useRef<any>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const userMarkerRef   = useRef<any>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const destMarkerRef   = useRef<any>(null)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const polylineRef     = useRef<any>(null)
   const userPannedRef   = useRef(false)
   const mapReadyRef     = useRef(false)
 
-  // Dark map style matching ARIA HUD theme
-  const darkStyle: google.maps.MapTypeStyle[] = [
-    { elementType: 'geometry', stylers: [{ color: '#0a0f0a' }] },
-    { elementType: 'labels.text.fill', stylers: [{ color: '#00e5ff' }] },
-    { elementType: 'labels.text.stroke', stylers: [{ color: '#0a0f0a' }] },
-    { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#1a2e1a' }] },
-    { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#00e5ff22' }] },
-    { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#1f3d1f' }] },
-    { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#050d05' }] },
-    { featureType: 'poi', stylers: [{ visibility: 'off' }] },
-    { featureType: 'transit', stylers: [{ visibility: 'simplified' }] },
-    { featureType: 'administrative', elementType: 'labels', stylers: [{ color: '#00e5ff88' }] },
+  // Dark map style — keeps ARIA theme but shows enough labels to be useful.
+  // Previously hid too many features causing a near-empty map.
+  // Now: roads visible, place names visible, POIs simplified not hidden.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const darkStyle: any[] = [
+    // Base geometry — dark background
+    { elementType: 'geometry', stylers: [{ color: '#0d1a0d' }] },
+
+    // All text labels — cyan tint, visible
+    { elementType: 'labels.text.fill',   stylers: [{ color: '#a8d5b5' }] },
+    { elementType: 'labels.text.stroke', stylers: [{ color: '#0d1a0d' }, { weight: 2 }] },
+    { elementType: 'labels.icon',        stylers: [{ visibility: 'on' }] },
+
+    // Roads — clearly visible
+    { featureType: 'road',          elementType: 'geometry',        stylers: [{ color: '#1e3a1e' }] },
+    { featureType: 'road',          elementType: 'geometry.stroke', stylers: [{ color: '#00e5ff', weight: 0.5, lightness: -30 }] },
+    { featureType: 'road',          elementType: 'labels.text.fill',stylers: [{ color: '#00e5ff' }] },
+    { featureType: 'road.highway',  elementType: 'geometry',        stylers: [{ color: '#2a5c2a' }] },
+    { featureType: 'road.highway',  elementType: 'labels.text.fill',stylers: [{ color: '#7dffb3' }] },
+    { featureType: 'road.arterial', elementType: 'labels.text.fill',stylers: [{ color: '#80cfa0' }] },
+    { featureType: 'road.local',    elementType: 'labels.text.fill',stylers: [{ color: '#6bab80' }] },
+
+    // Water
+    { featureType: 'water', elementType: 'geometry',        stylers: [{ color: '#051a0a' }] },
+    { featureType: 'water', elementType: 'labels.text.fill',stylers: [{ color: '#4fc3a1' }] },
+
+    // Landscape
+    { featureType: 'landscape',       elementType: 'geometry', stylers: [{ color: '#0f200f' }] },
+    { featureType: 'landscape.natural',elementType: 'geometry',stylers: [{ color: '#112211' }] },
+
+    // POIs — show simplified, not hidden
+    { featureType: 'poi',        stylers: [{ visibility: 'simplified' }] },
+    { featureType: 'poi',        elementType: 'labels.text.fill', stylers: [{ color: '#7db87d' }] },
+    { featureType: 'poi.park',   elementType: 'geometry',         stylers: [{ color: '#0e1f0e' }] },
+    { featureType: 'poi.business', stylers: [{ visibility: 'on' }] },
+
+    // Transit — show stops and lines
+    { featureType: 'transit',          stylers: [{ visibility: 'simplified' }] },
+    { featureType: 'transit.station',  elementType: 'labels.text.fill', stylers: [{ color: '#00e5ff' }] },
+    { featureType: 'transit.line',     elementType: 'geometry',          stylers: [{ color: '#1a4a1a' }] },
+
+    // Administrative boundaries — neighborhoods and localities visible
+    { featureType: 'administrative',           elementType: 'geometry.stroke',  stylers: [{ color: '#2a5c2a' }] },
+    { featureType: 'administrative.locality',  elementType: 'labels.text.fill', stylers: [{ color: '#00e5ff' }] },
+    { featureType: 'administrative.neighborhood', elementType: 'labels.text.fill', stylers: [{ color: '#80cfa0' }] },
   ]
 
   const initMap = useCallback(() => {
@@ -62,7 +100,7 @@ export const GoogleMap: React.FC<GoogleMapProps> = ({ position, route, destinati
 
     mapRef.current = new google.maps.Map(mapDivRef.current, {
       center,
-      zoom: 17,
+      zoom: 16,
       styles: darkStyle,
       disableDefaultUI: true,
       zoomControl: true,
