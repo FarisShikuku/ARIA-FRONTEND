@@ -1,36 +1,42 @@
 'use client';
 
 /**
- * AriaIntroBar.tsx — MODIFIED
+ * AriaIntroBar.tsx
  *
  * CHANGES vs previous version:
  *
- * 1. POSITIONING: sticky top-16 → fixed top-16
- *    WHY: "sticky" only works inside its scroll container — when the home
- *    page scrolls, the bar scrolls away. "fixed" pins it to the viewport
- *    permanently below the Navbar (top:64px = top-16), exactly as requested.
- *    The bar never moves regardless of how far the user scrolls.
+ * 1. IDLE STATE: no longer returns null.
+ *    WHY: The bar was invisible for ~500ms while /api/v1/sessions/start was
+ *    in-flight, causing a layout jump when it appeared. Now shows a "Starting…"
+ *    loading state immediately — the bar occupies its fixed position from the
+ *    first render, matching the behaviour of every other navbar element.
  *
- * 2. REMOVED: the "✕ Stop / Close" button.
- *    WHY: The bar must be permanent — it should never disappear when the user
- *    clicks anything. Previously clicking "✕" set introState to 'stopped'
- *    which caused the bar to return null. That button is gone. The only
- *    dismiss-like action left is "Mute", which keeps the bar visible.
+ * 2. NEW PROP: onSessionReady(sendBinary)
+ *    WHY: The home page needs to wire the camera feed (HomeCameraFeed) to the
+ *    Gemini session so ARIA can see video. AriaIntroBar owns the session via
+ *    useAriaIntro(), so it exposes sendBinary via this callback once the session
+ *    transitions out of idle. The callback fires once. Callers that don't need
+ *    camera (other pages) simply omit the prop — backward compatible.
  *
- * 3. REMOVED: early-return for introState === 'stopped'.
- *    WHY: If the session ends for any reason, the bar should still be visible
- *    (showing a "Restart" prompt) rather than disappearing.
+ * 3. NEW PROP: cameraConnected (optional boolean)
+ *    WHY: Gives the bar a way to show a subtle camera status indicator so ARIA
+ *    and the user both have visual confirmation that the camera feed is live.
+ *    Undefined = no indicator shown (backward compatible with other pages).
  *
- * 4. ADDED: home-page top-padding helper div (see usage in page.tsx).
- *    The bar is fixed so it overlaps page content. The home page adds
- *    a spacer div of height 44px (the bar's height) below the Navbar so
- *    the Hero title is never hidden behind the bar.
+ * 4. INTERNAL: mic permission check via navigator.permissions
+ *    WHY: When the user denies microphone, startListening() fails silently in
+ *    useAriaIntro — there was zero UI feedback. Now the bar detects 'denied'
+ *    state and surfaces a persistent inline warning with "How to allow" text,
+ *    making clear that ARIA is voice-only and text chat is not supported.
  *
- * All other logic, hooks, and classNames are unchanged.
+ * Everything else (positioning, state machine, controls, accessibility)
+ * is unchanged from the previous version.
  */
 
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAriaIntro, IntroState } from '@/hooks/useAriaIntro';
+
+// ── Sub-components (unchanged) ────────────────────────────────────────────────
 
 function SpeakingWave() {
   return (
@@ -63,6 +69,7 @@ function statusLabel(state: IntroState, isListening: boolean, isSpeaking: boolea
   if (isSpeaking)                               return 'ARIA is speaking';
   if (isListening)                              return 'Listening…';
   switch (state) {
+    case 'idle':              return 'Starting…';
     case 'waiting':           return 'Initialising…';
     case 'ready_to_activate': return 'ARIA — Ready';
     case 'active':            return 'ARIA — Active';
@@ -73,7 +80,30 @@ function statusLabel(state: IntroState, isListening: boolean, isSpeaking: boolea
   }
 }
 
-export const AriaIntroBar: React.FC = () => {
+// ── Props ─────────────────────────────────────────────────────────────────────
+
+interface AriaIntroBarProps {
+  /**
+   * Called once when the session transitions out of idle, exposing the
+   * sendBinary function so the home page can wire its camera feed to Gemini.
+   * Optional — omit on pages that don't need camera access from this bar.
+   */
+  onSessionReady?: (sendBinary: (data: ArrayBuffer) => void) => void;
+
+  /**
+   * Whether the home-page camera feed is actively capturing and sending frames.
+   * When provided, a subtle indicator is shown in the bar.
+   * Undefined = no indicator (backward compatible).
+   */
+  cameraConnected?: boolean;
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export const AriaIntroBar: React.FC<AriaIntroBarProps> = ({
+  onSessionReady,
+  cameraConnected,
+}) => {
   const {
     introState,
     isSpeaking,
@@ -86,33 +116,84 @@ export const AriaIntroBar: React.FC = () => {
     unmute,
     enableVoice,
     disableVoice,
+    sendBinary,
   } = useAriaIntro();
 
-  // Only truly hide when the hook hasn't initialised yet (idle).
-  if (introState === 'idle') return null;
+  // ── Mic permission detection ─────────────────────────────────────────────
+  const [micPermission, setMicPermission] = useState<PermissionState | 'unknown'>('unknown');
 
-  // FIX: If ARIA is actually speaking or listening, the session is live — never
-  // show the "stopped" UI even if introState got set to 'stopped' incorrectly.
-  // This happens when a transient WS error sets geminiState='error' which flows
-  // to introState='stopped', but the session recovers and keeps working.
-  const isActuallyActive = isSpeaking || isListening;
-  const isStopped = introState === 'stopped' && !isActuallyActive;
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !navigator.permissions) return;
+    navigator.permissions
+      .query({ name: 'microphone' as PermissionName })
+      .then((status) => {
+        setMicPermission(status.state);
+        status.onchange = () => setMicPermission(status.state);
+      })
+      .catch(() => {/* permissions API not supported — stay 'unknown' */});
+  }, []);
+
+  const micDenied = micPermission === 'denied';
+
+  // ── Fire onSessionReady once when session becomes available ──────────────
+  const sessionReadyFiredRef = useRef(false);
+
+  useEffect(() => {
+    if (
+      introState !== 'idle' &&
+      sendBinary &&
+      onSessionReady &&
+      !sessionReadyFiredRef.current
+    ) {
+      sessionReadyFiredRef.current = true;
+      onSessionReady(sendBinary);
+    }
+  }, [introState, sendBinary, onSessionReady]);
+
+  // ── Derived state (unchanged) ─────────────────────────────────────────────
+  const isActuallyActive  = isSpeaking || isListening;
+  const isStopped         = introState === 'stopped' && !isActuallyActive;
   const isPersistentActive = introState === 'active' || introState === 'muted' || isActuallyActive;
 
+  // ── Shared bar wrapper classNames ─────────────────────────────────────────
+  const barClass = `
+    fixed top-16 left-0 right-0 z-40
+    flex items-center justify-between
+    px-4 md:px-8 py-2.5
+    border-b border-cyan/20
+    bg-bg-deep/95 backdrop-blur-md
+    transition-opacity duration-300
+  `;
+
+  // ── IDLE: show loading state immediately — never return null ──────────────
+  if (introState === 'idle') {
+    return (
+      <div
+        role="region"
+        aria-label="ARIA Voice Assistant"
+        aria-live="polite"
+        className={barClass + ' opacity-70'}
+      >
+        <div className="flex items-center gap-3">
+          <span
+            className="w-2 h-2 rounded-full bg-cyan/40 animate-pulse"
+            aria-hidden="true"
+          />
+          <span className="text-xs font-mono text-text-muted">
+            ARIA — Starting…
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Normal render ─────────────────────────────────────────────────────────
   return (
     <div
       role="region"
       aria-label="ARIA Voice Assistant"
       aria-live="polite"
-      className={`
-        fixed top-16 left-0 right-0 z-40
-        flex items-center justify-between
-        px-4 md:px-8 py-2.5
-        border-b border-cyan/20
-        bg-bg-deep/95 backdrop-blur-md
-        transition-opacity duration-300
-        ${isStopped ? 'opacity-80' : 'opacity-100'}
-      `}
+      className={barClass + (isStopped ? ' opacity-80' : ' opacity-100')}
     >
       {/* ── Left: status indicator + label + transcript ─────────────────── */}
       <div className="flex items-center gap-3 min-w-0">
@@ -142,12 +223,34 @@ export const AriaIntroBar: React.FC = () => {
             &quot;{transcript}&quot;
           </span>
         )}
+
+        {/* Camera connected indicator — only shown when prop is provided */}
+        {cameraConnected !== undefined && (
+          <span
+            className={`hidden md:flex items-center gap-1 text-[10px] font-mono ${
+              cameraConnected ? 'text-cyan/50' : 'text-text-muted/40'
+            }`}
+            title={cameraConnected ? 'Camera feed active — ARIA can see' : 'Camera not connected'}
+          >
+            <span>📷</span>
+            <span>{cameraConnected ? 'Cam ✓' : 'Cam ✗'}</span>
+          </span>
+        )}
+
+        {/* Mic denied warning — persistent, inline */}
+        {micDenied && (
+          <span
+            className="hidden sm:flex items-center gap-1.5 text-[10px] font-mono text-red-400 border border-red-500/30 rounded-full px-2 py-0.5 bg-red-950/40 shrink-0"
+            title="ARIA is voice-only. Microphone access is required."
+          >
+            🎤 Mic blocked — allow in browser settings
+          </span>
+        )}
       </div>
 
-      {/* ── Right: controls — no close/stop button ───────────────────────── */}
+      {/* ── Right: controls (unchanged) ─────────────────────────────────── */}
       <div className="flex items-center gap-2 flex-shrink-0">
 
-        {/* Restart prompt when session ended */}
         {isStopped && (
           <button
             onClick={() => activate()}
@@ -158,7 +261,6 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
-        {/* Activate prompt */}
         {introState === 'ready_to_activate' && (
           <button
             onClick={() => activate()}
@@ -169,7 +271,6 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
-        {/* Mute when active */}
         {introState === 'active' && (
           <button
             onClick={mute}
@@ -180,7 +281,6 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
-        {/* Unmute when muted */}
         {introState === 'muted' && (
           <button
             onClick={unmute}
@@ -191,7 +291,6 @@ export const AriaIntroBar: React.FC = () => {
           </button>
         )}
 
-        {/* Voice interrupt toggle + pause while speaking / waiting */}
         {(isSpeaking || introState === 'waiting') && (
           <>
             <button
@@ -217,7 +316,6 @@ export const AriaIntroBar: React.FC = () => {
           </>
         )}
 
-        {/* Resume when paused */}
         {introState === 'paused' && (
           <button
             onClick={resume}
@@ -226,8 +324,6 @@ export const AriaIntroBar: React.FC = () => {
             ▶ Resume
           </button>
         )}
-
-        {/* NOTE: No close/stop button. The bar is permanent on the home page. */}
       </div>
     </div>
   );
