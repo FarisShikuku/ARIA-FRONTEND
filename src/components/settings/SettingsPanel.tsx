@@ -2,8 +2,8 @@
 
 import React from 'react';
 import { SettingsGroup } from './SettingsGroup';
-import { SettingRow } from './SettingRow';
-import { useSettings } from '@/contexts/SettingsContext';
+import { SettingRow }    from './SettingRow';
+import { useSettings }   from '@/contexts/SettingsContext';
 
 export const SettingsPanel: React.FC = () => {
   const { settings, updateSetting } = useSettings();
@@ -17,14 +17,35 @@ export const SettingsPanel: React.FC = () => {
         </h2>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-5xl">
+      {/* ── Registration / Coming Soon banner ── */}
+      <div className="max-w-5xl mb-8 rounded-xl border border-cyan/20 bg-cyan/5 px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-3">
+        <div className="flex items-center gap-3 flex-1 min-w-0">
+          <span className="text-2xl shrink-0">🚧</span>
+          <div>
+            <p className="text-sm font-semibold text-text-primary leading-tight">
+              Registration &amp; account management — coming soon
+            </p>
+            <p className="font-mono text-[10px] text-text-muted mt-1 leading-relaxed">
+              User accounts, emergency contacts, saved preferences, and session history will be
+              available in the next release. Settings below are preview-only and not yet persisted.
+            </p>
+          </div>
+        </div>
+        <span className="shrink-0 px-3 py-1 rounded-full border border-cyan/30 bg-cyan/10 text-cyan font-mono text-[10px] tracking-widest uppercase self-start sm:self-center">
+          Coming Soon
+        </span>
+      </div>
+
+      {/* ── Settings panels — greyed out via pointer-events-none + opacity ── */}
+      <div
+        className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-5xl opacity-40 pointer-events-none select-none"
+        aria-hidden="true"
+      >
         {/* Navigation Settings */}
         <div className="modal-overlay">
           <div className="modal-header">
             <h3 className="modal-title">Navigation Settings</h3>
-            <button className="modal-close" aria-label="Close">
-              ✕
-            </button>
+            <button className="modal-close" aria-label="Close">✕</button>
           </div>
           <div className="modal-body">
             <SettingsGroup title="// Voice Agent">
@@ -69,9 +90,7 @@ export const SettingsPanel: React.FC = () => {
         <div className="modal-overlay">
           <div className="modal-header">
             <h3 className="modal-title">Coach Settings</h3>
-            <button className="modal-close" aria-label="Close">
-              ✕
-            </button>
+            <button className="modal-close" aria-label="Close">✕</button>
           </div>
           <div className="modal-body">
             <SettingsGroup title="// Feedback Control" titleColor="amber">
@@ -114,4 +133,4 @@ export const SettingsPanel: React.FC = () => {
       </div>
     </section>
   );
-}; 
+};
