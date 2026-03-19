@@ -3,24 +3,26 @@
  *
  * CHANGES vs previous version:
  *
- * 1. DEFAULT IS FRONT CAMERA (user)
- *    Coach page needs the user facing the camera for performance coaching.
- *    facingMode state defaults to 'user'. This matches useMediaCapture which
- *    also defaults to 'user'.
+ * 1. VIDEO ELEMENT ALWAYS RENDERED — no longer gated on isCameraOn.
+ *    WHY: Previously the video element was wrapped in {isCameraOn && ...},
+ *    so it only appeared after the user clicked the camera icon. useMediaCapture
+ *    in the parent starts the stream on mount and sets videoRef.current.srcObject,
+ *    but without a mounted video element that stream had nowhere to display.
+ *    The user had to click the camera icon (onToggleCamera → setIsCameraOn(true))
+ *    just to see a feed that was already streaming.
  *
- * 2. FLIP BUTTON — only shown when hasMultipleCameras === true
- *    Previously the flip button was always shown. Now it is hidden on devices
- *    that only have one camera (laptops, basic phones). The hasMultipleCameras
- *    prop comes from useMediaCapture which probes navigator.mediaDevices after
- *    permission is granted.
+ *    FIX: The <video> element is always mounted. isCameraOn now only controls
+ *    whether the stream is visible (opacity) and whether the "CAMERA OFF"
+ *    placeholder is shown — it no longer gates the element itself.
+ *    The parent starts capture on mount; the video appears immediately.
  *
- * 3. video element mirrors only on front camera
- *    scaleX(-1) applies when facingMode === 'user' (selfie / front camera).
- *    Rear camera shows the real world — mirroring it would look wrong.
+ * 2. Camera-off placeholder shown as overlay, not a replacement.
+ *    WHY: Previously the placeholder replaced the video element entirely,
+ *    meaning the stream could not attach. Now it overlays above the (running)
+ *    video element so toggling camera on again instantly reveals the live feed
+ *    without needing to re-attach the stream.
  *
- * 4. onFlipCamera prop is optional
- *    Pages that don't wire up camera flipping simply don't pass the prop and
- *    the button will not render regardless of hasMultipleCameras.
+ * 3. Mirror logic, flip button, and facing badge unchanged.
  */
 
 import React, { useState } from 'react';
@@ -28,21 +30,19 @@ import { CoachingOverlay } from './CoachingOverlay';
 import type { CoachMetrics, CoachSessionPhase } from '@/lib/types/coach.types';
 
 interface VideoFeedProps {
-  videoRef:      React.RefObject<HTMLVideoElement | null>;
-  isCameraOn:    boolean;
-  metrics:       CoachMetrics;
-  isMicOn:       boolean;
-  isMuted:       boolean;
-  phase:         CoachSessionPhase;
-  onToggleMic:   () => void;
-  onToggleCamera: () => void;
-  onToggleMute:  () => void;
-  onPause:       () => void;
-  onResume:      () => void;
-  onEnd:         () => void;
-  /** Called when user flips the camera — parent updates facingMode on useMediaCapture */
-  onFlipCamera?: (facing: 'user' | 'environment') => void;
-  /** Whether the device has > 1 camera — controls flip button visibility */
+  videoRef:            React.RefObject<HTMLVideoElement | null>;
+  isCameraOn:          boolean;
+  metrics:             CoachMetrics;
+  isMicOn:             boolean;
+  isMuted:             boolean;
+  phase:               CoachSessionPhase;
+  onToggleMic:         () => void;
+  onToggleCamera:      () => void;
+  onToggleMute:        () => void;
+  onPause:             () => void;
+  onResume:            () => void;
+  onEnd:               () => void;
+  onFlipCamera?:       (facing: 'user' | 'environment') => void;
   hasMultipleCameras?: boolean;
 }
 
@@ -63,9 +63,6 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
   hasMultipleCameras = false,
 }) => {
   const isPaused = phase === 'paused';
-
-  // Track active facing mode locally so badge and mirror stay in sync.
-  // Coach defaults to front camera ('user').
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
 
   const handleFlip = () => {
@@ -77,20 +74,21 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
   return (
     <div className="relative rounded-2xl overflow-hidden aspect-video bg-black glow-box-amber border border-amber/20">
 
-      {/* ── Real camera feed ─────────────────────────────────────────────── */}
-      {isCameraOn && (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          className="absolute inset-0 w-full h-full object-cover"
-          // Mirror selfie view (front camera) — do NOT mirror rear camera
-          style={{ transform: facingMode === 'user' ? 'scaleX(-1)' : 'none' }}
-        />
-      )}
+      {/* ── Video element — always mounted so the stream can attach on load ── */}
+      {/* Visibility controlled by isCameraOn; stream is managed by parent.    */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        className="absolute inset-0 w-full h-full object-cover transition-opacity duration-300"
+        style={{
+          transform: facingMode === 'user' ? 'scaleX(-1)' : 'none',
+          opacity: isCameraOn ? 1 : 0,
+        }}
+      />
 
-      {/* ── Camera off placeholder ────────────────────────────────────────── */}
+      {/* ── Camera off placeholder — overlays the hidden video, not a replacement ── */}
       {!isCameraOn && (
         <div className="absolute inset-0 bg-gradient-to-br from-[#0a1520] to-[#050d14] flex items-center justify-center">
           <div className="relative flex flex-col items-center opacity-60">
@@ -113,7 +111,7 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
         <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20 pointer-events-none" />
       )}
 
-      {/* ── Flip camera button — top-left, only on multi-camera devices ─── */}
+      {/* ── Flip button — only on multi-camera devices ───────────────────── */}
       {isCameraOn && hasMultipleCameras && onFlipCamera && (
         <button
           onClick={handleFlip}
@@ -124,7 +122,7 @@ export const VideoFeed: React.FC<VideoFeedProps> = ({
         </button>
       )}
 
-      {/* ── Camera facing badge — top-right ──────────────────────────────── */}
+      {/* ── Camera facing badge ───────────────────────────────────────────── */}
       {isCameraOn && (
         <div className="absolute top-3 right-3 z-10 bg-black/60 backdrop-blur-md border border-white/10 rounded-full px-2 py-0.5 font-mono text-[9px] text-white/70">
           {facingMode === 'user' ? '↪ FRONT' : '↩ REAR'}

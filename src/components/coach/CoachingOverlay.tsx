@@ -1,35 +1,39 @@
 /**
- * CoachingOverlay.tsx — UPDATED
+ * CoachingOverlay.tsx
  *
- * WHAT CHANGED:
- * Previously had hardcoded static hint cards with no real data.
- * Now:
- * - Receives metrics prop to drive PostureGuide bars with real values
- * - Passes all control callbacks through to VideoControls
- * - HintCards are now driven by real-time coach_hint WS messages
- *   (via the events array from useCoachSession — top 3 shown here)
+ * CHANGES vs previous version:
  *
- * Note: The static example HintCards are kept as fallback when no real
- * hints have arrived yet, so the UI always looks complete during demo.
+ * 1. REMOVED static fallback hints that always rendered on mobile.
+ *    WHY: The static examples (Slow down / Great eye contact / Pause) were shown
+ *    unconditionally whenever liveHints was empty — even before session start.
+ *    On mobile these three cards stacked on top of the video feed, blocking
+ *    the entire right half of the view permanently. Now hints only render when
+ *    phase === 'active' AND real metric-driven hints exist.
+ *
+ * 2. Hint area hidden entirely when not active.
+ *    WHY: During idle/ready/paused there is nothing to coach yet. The overlay
+ *    area is kept empty so the video feed is fully visible.
+ *
+ * Everything else (PostureGuide, VideoControls, props) unchanged.
  */
 
 import React from 'react';
-import { HintCard } from './HintCard';
+import { HintCard }     from './HintCard';
 import { PostureGuide } from './PostureGuide';
 import { VideoControls } from './VideoControls';
 import type { CoachMetrics, CoachSessionPhase } from '@/lib/types/coach.types';
 
 interface CoachingOverlayProps {
-  metrics: CoachMetrics;
-  isMicOn: boolean;
-  isMuted: boolean;
-  phase: CoachSessionPhase;
-  onToggleMic: () => void;
-  onToggleCamera: () => void;
-  onToggleMute: () => void;
-  onPause: () => void;
-  onResume: () => void;
-  onEnd: () => void;
+  metrics:         CoachMetrics;
+  isMicOn:         boolean;
+  isMuted:         boolean;
+  phase:           CoachSessionPhase;
+  onToggleMic:     () => void;
+  onToggleCamera:  () => void;
+  onToggleMute:    () => void;
+  onPause:         () => void;
+  onResume:        () => void;
+  onEnd:           () => void;
 }
 
 export const CoachingOverlay: React.FC<CoachingOverlayProps> = ({
@@ -46,8 +50,8 @@ export const CoachingOverlay: React.FC<CoachingOverlayProps> = ({
 }) => {
   const isActive = phase === 'active';
 
-  // Build real-time hint cards from metrics
-  // These appear when metric values cross thresholds
+  // Only compute and show hints during an active session.
+  // No static fallback — empty overlay is correct when not coaching.
   const liveHints: { type: 'warn' | 'good' | 'info'; message: string; subtext: string }[] = [];
 
   if (isActive) {
@@ -70,30 +74,27 @@ export const CoachingOverlay: React.FC<CoachingOverlayProps> = ({
     }
   }
 
-  // Fall back to static examples so UI always looks complete
-  const displayHints = liveHints.length > 0 ? liveHints.slice(0, 3) : [
-    { type: 'warn' as const, message: 'Slow down', subtext: '160 WPM → target 130' },
-    { type: 'good' as const, message: 'Great eye contact ✓', subtext: 'Confidence +12%' },
-    { type: 'info' as const, message: 'Pause before next point', subtext: '2s pause = impact' },
-  ];
-
   return (
     <>
-      {/* Coaching Hints — top right */}
-      <div className="absolute right-4 md:right-5 top-4 md:top-5 flex flex-col gap-2 w-[180px] md:w-[200px]">
-        {displayHints.map((hint, i) => (
-          <HintCard key={i} type={hint.type} message={hint.message} subtext={hint.subtext} />
-        ))}
-      </div>
+      {/* Coaching hints — top right, only when active AND hints exist */}
+      {isActive && liveHints.length > 0 && (
+        <div className="absolute right-4 md:right-5 top-4 md:top-5 flex flex-col gap-2 w-[160px] md:w-[200px]">
+          {liveHints.slice(0, 3).map((hint, i) => (
+            <HintCard key={i} type={hint.type} message={hint.message} subtext={hint.subtext} />
+          ))}
+        </div>
+      )}
 
-      {/* Posture guide — driven by real metrics */}
-      <PostureGuide
-        postureScore={metrics.postureScore}
-        energyScore={metrics.energyScore}
-        eyeContactScore={metrics.eyeContactScore}
-      />
+      {/* Posture guide — driven by real metrics, only when active */}
+      {isActive && (
+        <PostureGuide
+          postureScore={metrics.postureScore}
+          energyScore={metrics.energyScore}
+          eyeContactScore={metrics.eyeContactScore}
+        />
+      )}
 
-      {/* Video controls */}
+      {/* Video controls — always present */}
       <VideoControls
         isMicOn={isMicOn}
         isMuted={isMuted}
